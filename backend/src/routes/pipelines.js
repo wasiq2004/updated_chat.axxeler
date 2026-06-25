@@ -287,7 +287,9 @@ router.put('/stages/:id', adminOnly, async (req, res) => {
 // Delete a stage. Admin only. Refuses if it still holds deals.
 router.delete('/stages/:id', adminOnly, async (req, res) => {
   try {
-    const { rows: dealCnt } = await pool.query('SELECT COUNT(*)::int AS n FROM coexistence.deals WHERE stage_id = $1', [req.params.id]);
+    const cntParams = [req.params.id];
+    const { rows: dealCnt } = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM coexistence.deals WHERE stage_id = $1${tScope(req, null, cntParams)}`, cntParams);
     if (dealCnt[0].n > 0) return res.status(409).json({ error: 'Move or delete the deals in this stage first.' });
     const delParams = [req.params.id];
     const delScope = tScope(req, null, delParams);
@@ -554,14 +556,16 @@ router.post('/deals/:id/move', async (req, res) => {
     const { rows: posRows } = await pool.query(
       'SELECT COALESCE(MAX(position),-1)+1 AS pos FROM coexistence.deals WHERE stage_id = $1', [stage.id]
     );
+    const mvParams = [stage.id, status, posRows[0].pos, req.params.id];
     const { rows } = await pool.query(
       `UPDATE coexistence.deals
           SET stage_id = $1, status = $2, position = $3, updated_at = NOW(),
               won_at  = ${status === 'won' ? 'COALESCE(won_at, NOW())' : 'NULL'},
               lost_at = ${status === 'lost' ? 'COALESCE(lost_at, NOW())' : 'NULL'}
-        WHERE id = $4 RETURNING *`,
-      [stage.id, status, posRows[0].pos, req.params.id]
+        WHERE id = $4${tScope(req, null, mvParams)} RETURNING *`,
+      mvParams
     );
+    if (rows.length === 0) return res.status(404).json({ error: 'Deal not found' });
     res.json(dealShape(rows[0]));
   } catch (err) {
     console.error('[pipelines] move deal error:', err.message);

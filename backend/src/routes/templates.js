@@ -653,9 +653,15 @@ router.post('/templates/:id/sync', requirePermission('template-builder'), async 
  * "Refresh All" button (POST /templates/sync-all) and the periodic auto-sync
  * cron in index.js (Meta does not push us approval status — we must poll).
  */
-async function syncAllAccountTemplates() {
+// tenantId: when provided (manual "Refresh All" by an admin), only that tenant's
+// accounts sync. The boot cron calls it with no arg to poll every tenant.
+async function syncAllAccountTemplates(tenantId = null) {
+  const params = [];
+  let scope = '';
+  if (tenantId != null) { params.push(tenantId); scope = ' AND tenant_id = $1'; }
   const { rows: accs } = await pool.query(
-    `SELECT * FROM coexistence.whatsapp_accounts WHERE is_active = TRUE`
+    `SELECT * FROM coexistence.whatsapp_accounts WHERE is_active = TRUE${scope}`,
+    params
   );
   let totalUpdated = 0, totalImported = 0, totalRemote = 0;
   for (const r of accs) {
@@ -681,7 +687,7 @@ async function syncAllAccountTemplates() {
  */
 router.post('/templates/sync-all', requirePermission('template-builder'), async (req, res) => {
   try {
-    const result = await syncAllAccountTemplates();
+    const result = await syncAllAccountTemplates(req.tenantId);
     res.json({ ok: true, ...result });
   } catch (err) {
     console.error('[templates] sync-all error:', err.message);
@@ -731,7 +737,7 @@ router.post('/templates/bulk-submit', requirePermission('template-builder'), asy
       try {
         // Re-invoke the existing /:id/submit handler logic inline by calling it
         await new Promise((resolve) => {
-          submitOneInline(id).then(out => {
+          submitOneInline(id, req.tenantId).then(out => {
             results.push({ id, ...out });
             resolve();
           }).catch(err => {
@@ -751,8 +757,12 @@ router.post('/templates/bulk-submit', requirePermission('template-builder'), asy
 });
 
 // Internal: shared submit-one logic used by /submit and /bulk-submit
-async function submitOneInline(id) {
-  const { rows: tplRows } = await pool.query('SELECT * FROM coexistence.message_templates WHERE id = $1', [id]);
+async function submitOneInline(id, tenantId = null) {
+  const selParams = [id];
+  let selScope = '';
+  if (tenantId != null) { selParams.push(tenantId); selScope = ' AND tenant_id = $2'; }
+  const { rows: tplRows } = await pool.query(
+    `SELECT * FROM coexistence.message_templates WHERE id = $1${selScope}`, selParams);
   if (tplRows.length === 0) return { ok: false, error: 'Template not found' };
   const tpl = tplRows[0];
   if (!tpl.whatsapp_account_id) return { ok: false, error: 'No WhatsApp Account assigned' };
@@ -896,9 +906,10 @@ router.post('/templates/upload-media-handle', requirePermission('template-builde
       return res.status(400).json({ error: `Unsupported file type "${req.file.mimetype || 'unknown'}" for a template header. ${TEMPLATE_TYPES_MSG}` });
     }
 
+    const accParams = [accountId];
     const { rows } = await pool.query(
-      'SELECT * FROM coexistence.whatsapp_accounts WHERE id = $1',
-      [accountId]
+      `SELECT * FROM coexistence.whatsapp_accounts WHERE id = $1${scopeClause(req, null, accParams)}`,
+      accParams
     );
     if (rows.length === 0) return res.status(404).json({ error: 'WhatsApp account not found' });
     const acc = rows[0];
@@ -944,9 +955,10 @@ router.post('/templates/upload-media-handle-from-library', requirePermission('te
       return res.status(400).json({ error: 'accountId and mediaLibraryId required' });
     }
 
+    const accParams = [accountId];
     const { rows: accRows } = await pool.query(
-      'SELECT * FROM coexistence.whatsapp_accounts WHERE id = $1',
-      [accountId]
+      `SELECT * FROM coexistence.whatsapp_accounts WHERE id = $1${scopeClause(req, null, accParams)}`,
+      accParams
     );
     if (!accRows.length) return res.status(404).json({ error: 'WhatsApp account not found' });
     const acc = accRows[0];
@@ -954,9 +966,10 @@ router.post('/templates/upload-media-handle-from-library', requirePermission('te
       return res.status(400).json({ error: 'WhatsApp account is missing meta_app_id — add it in Settings → WhatsApp Accounts' });
     }
 
+    const mParams = [mediaLibraryId];
     const { rows: mRows } = await pool.query(
-      `SELECT * FROM coexistence.media_library WHERE id = $1 AND deleted_at IS NULL`,
-      [mediaLibraryId]
+      `SELECT * FROM coexistence.media_library WHERE id = $1 AND deleted_at IS NULL${scopeClause(req, null, mParams)}`,
+      mParams
     );
     if (!mRows.length) return res.status(404).json({ error: 'Media not found in library' });
     const media = mRows[0];

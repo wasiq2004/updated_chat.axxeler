@@ -52,23 +52,25 @@ const CORS_ORIGINS = (process.env.CORS_ORIGIN || '')
   .map((o) => o.trim())
   .filter(Boolean);
 
-const ALLOWED_ORIGINS = [
-  ...CORS_ORIGINS,
-  'http://localhost:5173','https://avalyn-unshuddering-dissentiently.ngrok-free.dev','http://localhost:8080',
-].filter(Boolean);
+// Dev-only convenience origins (Vite dev server, an ad-hoc ngrok tunnel). These
+// are NEVER allowed in production — a public dev origin with credentials:true is
+// a CSRF foothold. Production trusts only the explicit CORS_ORIGIN list (+ same
+// -machine localhost via isLocalOrigin below).
+const DEV_ORIGINS = process.env.NODE_ENV !== 'production'
+  ? ['http://localhost:5173', 'http://localhost:8080']
+  : [];
+const ALLOWED_ORIGINS = [...CORS_ORIGINS, ...DEV_ORIGINS].filter(Boolean);
 
 // A local `docker compose up -d` serves the app at http://localhost:8080 (or a
 // custom HTTP_PORT) behind a same-origin nginx proxy, so requests carry an
 // Origin like http://localhost:8080 that won't match CORS_ORIGIN. Allow any
 // localhost / 127.0.0.1 origin (any port) so the documented local install works
-// out of the box without needing CORS_ORIGIN; production still restricts to the
-// explicit CORS_ORIGIN domain. Safe because auth cookies are sameSite=strict.
+// out of the box. Same-machine only and auth cookies are sameSite=strict.
 const isLocalOrigin = (o) => /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(o);
 
-// Use the first configured origin (or a sensible fallback) for the CSP
-// connect-src wss:// directive — CORS_ORIGIN can now be a comma list, so we
-// can't feed the raw value through .replace().
-const CORS_DOMAIN = (CORS_ORIGINS[0] || 'https://avalyn-unshuddering-dissentiently.ngrok-free.dev' || 'http://localhost:8080').replace(/^https?:\/\//, '');
+// First configured origin for the CSP connect-src wss:// directive. No public
+// fallback — when CORS_ORIGIN is unset, the wss directive is simply omitted.
+const CORS_DOMAIN = (CORS_ORIGINS[0] || '').replace(/^https?:\/\//, '');
 
 // Security middleware
 app.use(helmet({
@@ -138,6 +140,9 @@ app.use('/api', webhookRouter);
 // routes/googleIntegrations.js). Everything else under /google-integrations is
 // auth-required and mounted further down.
 app.use('/api', googleIntegrationsPublicRouter);
+// White-label: public login-branding lookup (?w=<reseller-slug>) — no auth.
+const { publicRouter: whiteLabelPublicRouter } = require('./routes/whiteLabel');
+app.use('/api', whiteLabelPublicRouter);
 // MCP API — authenticates via its OWN bearer middleware (not the JWT cookie)
 app.use('/api/mcp/v1', mcpApiRouter);
 // Remote (Streamable HTTP) MCP connector — key in the URL path, public.
@@ -351,13 +356,30 @@ async function start() {
     console.log(`[Zen Chat] Backend running on port ${PORT}`);
   });
 
-  // Graceful shutdown so BullMQ marks in-flight jobs as stalled (not lost)
+  // Graceful shutdown: stop accepting new connections, drain in-flight HTTP,
+  // close the queues (so BullMQ marks in-flight jobs stalled, not lost), then end
+  // the DB pool. A hard 15s timeout guards against a hung connection blocking the
+  // SIGTERM→SIGKILL window on rolling deploys.
+  let shuttingDown = false;
   const shutdown = async (sig) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     console.log(`[Zen Chat] ${sig} received, draining…`);
-    server.close(() => {});
-    await shutdownMediaQueue();
-    await shutdownSendQueue();
-    await shutdownAgentQueue();
+    const hardExit = setTimeout(() => {
+      console.warn('[Zen Chat] drain timed out — forcing exit');
+      process.exit(0);
+    }, 15000);
+    hardExit.unref();
+    try {
+      await new Promise((resolve) => server.close(resolve)); // stop new conns, drain existing
+      await shutdownMediaQueue();
+      await shutdownSendQueue();
+      await shutdownAgentQueue();
+      await pool.end().catch(() => {});
+    } catch (err) {
+      console.error('[Zen Chat] shutdown error:', err.message);
+    }
+    clearTimeout(hardExit);
     process.exit(0);
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));

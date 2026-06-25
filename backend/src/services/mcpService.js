@@ -83,6 +83,9 @@ async function validateKey(rawKey) {
   );
   const row = rows[0];
   if (!row || !row.is_enabled) { const e = new Error('Invalid or disabled API key'); e.status = 401; throw e; }
+  // A key with no tenant would run UNSCOPED (see every workspace's data). Now
+  // that the platform is multi-tenant, refuse it rather than leak across tenants.
+  if (row.tenant_id == null) { const e = new Error('API key is not bound to a workspace'); e.status = 403; throw e; }
   const settings = await loadSettings(row.tenant_id);
   if (!settings.masterEnabled) { const e = new Error('MCP access is disabled'); e.status = 403; throw e; }
   pool.query('UPDATE coexistence.mcp_api_keys SET last_used_at = NOW() WHERE id = $1', [row.id]).catch(() => {});

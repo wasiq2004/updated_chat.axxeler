@@ -107,9 +107,11 @@ router.get('/dashboard', async (req, res) => {
     // Resolve the "Lead Source" category id (case-insensitive). A "lead" is a
     // contact tagged under this category — drives the New Leads + Open
     // Conversations cards.
+    const lsParams = [LEAD_SOURCE_CATEGORY];
+    const lsScope = req.tenantId != null ? ` AND tenant_id = $${lsParams.push(req.tenantId)}` : '';
     const { rows: lsRows } = await pool.query(
-      `SELECT id FROM coexistence.categories WHERE LOWER(name) = LOWER($1) ORDER BY created_at LIMIT 1`,
-      [LEAD_SOURCE_CATEGORY]
+      `SELECT id FROM coexistence.categories WHERE LOWER(name) = LOWER($1)${lsScope} ORDER BY created_at LIMIT 1`,
+      lsParams
     );
     const leadSourceCatId = lsRows[0]?.id || null;
 
@@ -229,8 +231,10 @@ router.get('/dashboard', async (req, res) => {
          ORDER BY count DESC`,
         [funnelCategoryId], 'contacts'
       );
+      const catParams = [funnelCategoryId];
+      const catScope = req.tenantId != null ? ` AND tenant_id = $${catParams.push(req.tenantId)}` : '';
       const { rows: catRows } = await pool.query(
-        `SELECT name FROM coexistence.categories WHERE id = $1`, [funnelCategoryId]
+        `SELECT name FROM coexistence.categories WHERE id = $1${catScope}`, catParams
       );
       funnel = {
         categoryId: funnelCategoryId,

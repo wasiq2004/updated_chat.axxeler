@@ -100,6 +100,8 @@ adminRouter.post('/mcp/keys', adminOnly, async (req, res) => {
   try {
     const label = String(req.body?.label || '').trim();
     if (!label) return res.status(400).json({ error: 'A label is required' });
+    // A key MUST belong to a workspace, else it would have unscoped access.
+    if (req.tenantId == null) return res.status(400).json({ error: 'Cannot create an MCP key without a workspace context' });
     const plain = 'zck_live_' + crypto.randomBytes(24).toString('base64url');
     const keyPrefix = plain.slice(0, 13);
     const keyLast4 = plain.slice(-4);

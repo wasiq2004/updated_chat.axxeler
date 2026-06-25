@@ -1,7 +1,20 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Lock, LogIn, Eye, EyeOff, ArrowLeft } from 'lucide-react';
 import { api } from '../api.js';
 import { C, FONT } from '../constants.js';
+
+// White-label: read the partner slug from ?w=<slug> (search or hash query) so a
+// partner's customers see branded login on the shared domain.
+function readPartnerSlug() {
+  try {
+    const fromSearch = new URLSearchParams(window.location.search).get('w');
+    if (fromSearch) return fromSearch;
+    const h = window.location.hash || '';
+    const qi = h.indexOf('?');
+    if (qi >= 0) return new URLSearchParams(h.slice(qi + 1)).get('w');
+  } catch { /* ignore */ }
+  return null;
+}
 
 export default function LoginGate({ onLogin, onBack }) {
   const [email, setEmail] = useState('');
@@ -9,6 +22,17 @@ export default function LoginGate({ onLogin, onBack }) {
   const [showPw, setShowPw] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [brand, setBrand] = useState(null); // partner white-label branding
+
+  useEffect(() => {
+    const slug = readPartnerSlug();
+    if (!slug) return;
+    api.brandingBySlug(slug).then(b => { if (b?.found) setBrand(b); }).catch(() => {});
+  }, []);
+
+  const accent = (brand?.primaryColor) || C.primary;
+  const brandName = brand?.brandName || 'Zen Chat';
+  const logoSrc = brand?.logoUrl || '/logo.png';
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -50,7 +74,7 @@ export default function LoginGate({ onLogin, onBack }) {
 
         <div style={{ position: 'relative', zIndex: 1, maxWidth: 480 }} className="stagger">
           <div style={{ marginBottom: 40, animation: 'fadeInUp 0.5s ease-out 0.15s both' }}>
-            <img src="/logo.png" alt="Zen Chat"
+            <img src={logoSrc} alt={brandName}
               style={{ height: 52, width: 'auto', objectFit: 'contain', display: 'block' }} />
           </div>
           <h1 style={{
@@ -58,7 +82,7 @@ export default function LoginGate({ onLogin, onBack }) {
             letterSpacing: '-0.03em', lineHeight: 1.15, marginBottom: 20,
             animation: 'fadeInUp 0.5s ease-out 0.28s both',
           }}>
-            Manage conversations at scale
+            {brand?.loginTagline || 'Manage conversations at scale'}
           </h1>
           <p style={{
             fontSize: 16, color: C.headerMuted, lineHeight: 1.65, marginBottom: 40,
@@ -124,7 +148,7 @@ export default function LoginGate({ onLogin, onBack }) {
             Welcome back
           </h2>
           <p style={{ fontSize: 14, color: C.textSecondary, marginBottom: 28, lineHeight: 1.5 }}>
-            Sign in to your Zen Chat workspace
+            Sign in to your {brandName} workspace
           </p>
 
           <form onSubmit={handleSubmit}>
@@ -195,16 +219,16 @@ export default function LoginGate({ onLogin, onBack }) {
               disabled={loading}
               style={{
                 width: '100%', padding: '13px', borderRadius: 10, border: 'none',
-                background: loading ? C.primaryHover : C.primary,
+                background: accent,
                 color: '#fff', fontSize: 14, fontWeight: 600,
                 cursor: loading ? 'not-allowed' : 'pointer',
                 opacity: loading ? 0.75 : 1,
                 display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
                 fontFamily: FONT,
-                boxShadow: loading ? 'none' : '0 2px 12px rgba(220,38,38,0.28)',
+                boxShadow: loading ? 'none' : '0 2px 12px rgba(0,0,0,0.18)',
               }}
-              onMouseEnter={e => { if (!loading) { e.currentTarget.style.background = C.primaryHover; e.currentTarget.style.boxShadow = '0 4px 20px rgba(220,38,38,0.38)'; e.currentTarget.style.transform = 'translateY(-1px)'; } }}
-              onMouseLeave={e => { e.currentTarget.style.background = loading ? C.primaryHover : C.primary; e.currentTarget.style.boxShadow = loading ? 'none' : '0 2px 12px rgba(220,38,38,0.28)'; e.currentTarget.style.transform = 'none'; }}
+              onMouseEnter={e => { if (!loading) { e.currentTarget.style.transform = 'translateY(-1px)'; } }}
+              onMouseLeave={e => { e.currentTarget.style.transform = 'none'; }}
             >
               {loading
                 ? <span style={{ display: 'inline-block', width: 16, height: 16, border: '2px solid rgba(255,255,255,0.4)', borderTopColor: '#fff', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />

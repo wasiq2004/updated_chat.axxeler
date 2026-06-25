@@ -14,12 +14,19 @@ import { useState, useEffect, useCallback } from 'react';
 import { api } from '../api.js';
 import { C, FONT } from '../constants.js';
 
-const TABS = [
-  { key: 'overview', label: 'Overview' },
-  { key: 'admins', label: 'Admins' },
-  { key: 'plans', label: 'Plans' },
-  { key: 'audit', label: 'Audit Log' },
-];
+// Tabs depend on the operator: the platform owner manages Partners (resellers);
+// a white-label reseller manages their own Branding.
+function tabsFor(user) {
+  const t = [
+    { key: 'overview', label: 'Overview' },
+    { key: 'admins', label: 'Admins' },
+  ];
+  if (user?.isSuperAdmin) t.push({ key: 'partners', label: 'Partners' });
+  t.push({ key: 'plans', label: 'Plans' });
+  if (user?.isResellerAdmin) t.push({ key: 'branding', label: 'Branding' });
+  t.push({ key: 'audit', label: 'Audit Log' });
+  return t;
+}
 
 const card = {
   background: C.cardBg, border: `1px solid ${C.border}`, borderRadius: 12,
@@ -58,15 +65,22 @@ function StatusPill({ status }) {
   );
 }
 
-export default function SuperAdminPage() {
+export default function SuperAdminPage({ user }) {
   const [tab, setTab] = useState('overview');
+  const TABS = tabsFor(user);
+  const isReseller = !!user?.isResellerAdmin;
+  // Only the platform owner can impersonate (the impersonation route is
+  // super-admin-only); resellers manage but don't impersonate.
+  const isSuper = !!user?.isSuperAdmin;
 
   return (
     <div style={{ padding: '28px 32px', fontFamily: FONT, color: C.text, maxWidth: 1180, margin: '0 auto', width: '100%' }}>
       <div style={{ marginBottom: 6, fontSize: 12, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: C.primary }}>
-        Platform
+        {isReseller ? 'White-label partner' : 'Platform'}
       </div>
-      <h1 style={{ fontSize: 26, fontWeight: 800, margin: '0 0 20px', letterSpacing: '-0.02em' }}>Super Admin</h1>
+      <h1 style={{ fontSize: 26, fontWeight: 800, margin: '0 0 20px', letterSpacing: '-0.02em' }}>
+        {isReseller ? 'Partner Console' : 'Super Admin'}
+      </h1>
 
       <div style={{ display: 'flex', gap: 6, marginBottom: 22, borderBottom: `1px solid ${C.border}` }}>
         {TABS.map(t => (
@@ -81,9 +95,188 @@ export default function SuperAdminPage() {
       </div>
 
       {tab === 'overview' && <Overview />}
-      {tab === 'admins' && <Admins />}
+      {tab === 'admins' && <Admins isSuper={isSuper} />}
+      {tab === 'partners' && <Partners />}
       {tab === 'plans' && <Plans />}
+      {tab === 'branding' && <BrandingTab />}
       {tab === 'audit' && <Audit />}
+    </div>
+  );
+}
+
+// ─── Partners (white-label resellers) — platform owner only ──────────────────
+function Partners() {
+  const { data, error, loading, reload } = useAsync(() => api.platform.resellers(), []);
+  const [showCreate, setShowCreate] = useState(false);
+  const [busy, setBusy] = useState(null);
+
+  async function toggle(r) {
+    const next = r.status === 'suspended' ? 'active' : 'suspended';
+    if (!window.confirm(`${next === 'suspended' ? 'Suspend' : 'Activate'} partner "${r.name}"?`)) return;
+    setBusy(r.id);
+    try { await api.platform.updateReseller(r.id, { status: next }); reload(); }
+    catch (e) { alert(e.message); } finally { setBusy(null); }
+  }
+
+  if (loading) return <Muted>Loading…</Muted>;
+  if (error) return <ErrorBox msg={error} />;
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+        <div style={{ fontSize: 13, color: C.textSecondary }}>
+          A partner gets their own branded login (<code>?w=slug</code>), their own console, plans and admins.
+        </div>
+        <button style={btnPrimary} onClick={() => setShowCreate(true)}>+ New partner</button>
+      </div>
+      {showCreate && <CreatePartner onClose={() => setShowCreate(false)} onCreated={() => { setShowCreate(false); reload(); }} />}
+      <div style={{ ...card, padding: 0, overflow: 'hidden' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13.5 }}>
+          <thead>
+            <tr style={{ background: C.pageBg, textAlign: 'left', color: C.textSecondary }}>
+              {['Partner', 'Login slug', 'Status', 'Admins', 'Users', ''].map(h => (
+                <th key={h} style={{ padding: '11px 14px', fontWeight: 600, fontSize: 12 }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {(data || []).map(r => (
+              <tr key={r.id} style={{ borderTop: `1px solid ${C.border}` }}>
+                <td style={{ padding: '11px 14px', fontWeight: 600 }}>{r.branding?.brandName || r.name}</td>
+                <td style={{ padding: '11px 14px', color: C.textSecondary }}>?w={r.slug}</td>
+                <td style={{ padding: '11px 14px' }}><StatusPill status={r.status} /></td>
+                <td style={{ padding: '11px 14px' }}>{r.admins}</td>
+                <td style={{ padding: '11px 14px' }}>{r.users}</td>
+                <td style={{ padding: '11px 14px', textAlign: 'right' }}>
+                  <button style={{ ...btn, padding: '5px 10px', fontSize: 12.5 }} disabled={busy === r.id} onClick={() => toggle(r)}>
+                    {r.status === 'suspended' ? 'Activate' : 'Suspend'}
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {(data || []).length === 0 && (
+              <tr><td colSpan={6} style={{ padding: 20, textAlign: 'center', color: C.textMuted }}>No partners yet.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function CreatePartner({ onClose, onCreated }) {
+  const [f, setF] = useState({ name: '', adminEmail: '', adminName: '', adminPassword: '', brandName: '', primaryColor: '', logoUrl: '' });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const [created, setCreated] = useState(null);
+  const upd = (k, v) => setF(s => ({ ...s, [k]: v }));
+
+  async function submit() {
+    if (!f.name.trim()) { setErr('Partner name is required'); return; }
+    if (!f.adminEmail.trim()) { setErr('Partner admin email is required'); return; }
+    setBusy(true); setErr(null);
+    try {
+      const r = await api.platform.createReseller({
+        name: f.name.trim(), adminEmail: f.adminEmail.trim(),
+        adminName: f.adminName.trim() || undefined, adminPassword: f.adminPassword.trim() || undefined,
+        branding: { brandName: f.brandName.trim() || f.name.trim(), primaryColor: /^#[0-9a-fA-F]{6}$/.test(f.primaryColor) ? f.primaryColor : undefined, logoUrl: f.logoUrl.trim() || undefined },
+      });
+      setCreated({ email: f.adminEmail.trim(), password: r.generatedPassword || f.adminPassword.trim(), slug: r.slug });
+    } catch (e) { setErr(e.message); setBusy(false); }
+  }
+
+  if (created) {
+    return (
+      <div style={{ ...card, marginBottom: 14, borderColor: C.green }}>
+        <div style={{ fontWeight: 700, marginBottom: 8, color: C.green }}>✓ Partner created</div>
+        <div style={{ fontSize: 13, color: C.textSecondary, marginBottom: 10 }}>Give the partner their console login. Their customers log in at <b>?w={created.slug}</b>.</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 14, fontFamily: 'monospace', background: C.pageBg, padding: 12, borderRadius: 8 }}>
+          <div>Email: <b>{created.email}</b></div>
+          <div>Password: <b>{created.password}</b></div>
+        </div>
+        <div style={{ marginTop: 12, textAlign: 'right' }}><button style={btnPrimary} onClick={onCreated}>Done</button></div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ ...card, marginBottom: 14 }}>
+      <div style={{ fontWeight: 700, marginBottom: 12 }}>Create white-label partner</div>
+      {err && <ErrorBox msg={err} />}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 }}>
+        <input autoFocus placeholder="Partner / company name" value={f.name} onChange={e => upd('name', e.target.value)} style={inputStyle} />
+        <input placeholder="Partner admin email (login)" value={f.adminEmail} onChange={e => upd('adminEmail', e.target.value)} style={inputStyle} />
+        <input placeholder="Admin display name (optional)" value={f.adminName} onChange={e => upd('adminName', e.target.value)} style={inputStyle} />
+        <input placeholder="Password (blank = auto)" value={f.adminPassword} onChange={e => upd('adminPassword', e.target.value)} style={inputStyle} />
+        <input placeholder="Brand name (shown to their users)" value={f.brandName} onChange={e => upd('brandName', e.target.value)} style={inputStyle} />
+        <input placeholder="Accent color #RRGGBB" value={f.primaryColor} onChange={e => upd('primaryColor', e.target.value)} style={inputStyle} />
+        <input placeholder="Logo URL (optional)" value={f.logoUrl} onChange={e => upd('logoUrl', e.target.value)} style={inputStyle} />
+      </div>
+      <div style={{ marginTop: 12, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+        <button style={btn} onClick={onClose} disabled={busy}>Cancel</button>
+        <button style={btnPrimary} onClick={submit} disabled={busy}>{busy ? 'Creating…' : 'Create partner'}</button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Branding (a reseller editing its own white-label) ───────────────────────
+function BrandingTab() {
+  const { data, error, loading, reload } = useAsync(() => api.platform.myReseller(), []);
+  const [f, setF] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
+  useEffect(() => {
+    if (data) setF({
+      name: data.name || '',
+      brandName: data.branding?.brandName || '',
+      primaryColor: data.branding?.primaryColor || '',
+      logoUrl: data.branding?.logoUrl || '',
+      loginTagline: data.branding?.loginTagline || '',
+    });
+  }, [data]);
+  if (loading || !f) return <Muted>Loading…</Muted>;
+  if (error) return <ErrorBox msg={error} />;
+  const upd = (k, v) => { setF(s => ({ ...s, [k]: v })); setSaved(false); };
+
+  async function save() {
+    setBusy(true);
+    try {
+      await api.platform.updateMyReseller({
+        name: f.name.trim() || undefined,
+        branding: {
+          brandName: f.brandName.trim(),
+          primaryColor: /^#[0-9a-fA-F]{6}$/.test(f.primaryColor) ? f.primaryColor : undefined,
+          logoUrl: f.logoUrl.trim(),
+          loginTagline: f.loginTagline.trim(),
+        },
+      });
+      setSaved(true); reload();
+    } catch (e) { alert(e.message); } finally { setBusy(false); }
+  }
+
+  return (
+    <div style={{ maxWidth: 560 }}>
+      <Section title="Your white-label branding">
+        <div style={{ fontSize: 12.5, color: C.textSecondary, marginBottom: 14 }}>
+          Your customers log in at <b>?w={data.slug}</b> and see this branding across the app.
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <Field label="Brand name" block><input value={f.brandName} onChange={e => upd('brandName', e.target.value)} style={{ ...inputStyle, width: '100%' }} /></Field>
+          <Field label="Accent color (#RRGGBB)" block>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <input value={f.primaryColor} onChange={e => upd('primaryColor', e.target.value)} placeholder="#E22635" style={{ ...inputStyle, flex: 1 }} />
+              <span style={{ width: 34, height: 34, borderRadius: 8, border: `1px solid ${C.border}`, background: /^#[0-9a-fA-F]{6}$/.test(f.primaryColor) ? f.primaryColor : '#fff' }} />
+            </div>
+          </Field>
+          <Field label="Logo URL" block><input value={f.logoUrl} onChange={e => upd('logoUrl', e.target.value)} placeholder="https://…/logo.png" style={{ ...inputStyle, width: '100%' }} /></Field>
+          <Field label="Login tagline" block><input value={f.loginTagline} onChange={e => upd('loginTagline', e.target.value)} style={{ ...inputStyle, width: '100%' }} /></Field>
+        </div>
+        <div style={{ marginTop: 16, display: 'flex', alignItems: 'center', gap: 12 }}>
+          <button style={btnPrimary} onClick={save} disabled={busy}>{busy ? 'Saving…' : 'Save branding'}</button>
+          {saved && <span style={{ color: C.green, fontSize: 13, fontWeight: 600 }}>✓ Saved</span>}
+        </div>
+      </Section>
     </div>
   );
 }
@@ -158,7 +351,7 @@ function Overview() {
 }
 
 // ─── Admins (tenants) ────────────────────────────────────────────────────────
-function Admins() {
+function Admins({ isSuper }) {
   const { data, error, loading, reload } = useAsync(() => api.platform.tenants(), []);
   const { data: plans } = useAsync(() => api.platform.plans(), []);
   const [showCreate, setShowCreate] = useState(false);
@@ -212,7 +405,7 @@ function Admins() {
         </table>
       </div>
       {detailFor && (
-        <AdminDetail tenantId={detailFor} plans={plans || []} onClose={() => setDetailFor(null)} onChanged={reload} />
+        <AdminDetail tenantId={detailFor} plans={plans || []} isSuper={isSuper} onClose={() => setDetailFor(null)} onChanged={reload} />
       )}
     </div>
   );
@@ -287,7 +480,7 @@ function CreateAdmin({ plans, onClose, onCreated }) {
 }
 
 // ─── Admin drill-down: subscription, admin login, orgs → users ───────────────
-function AdminDetail({ tenantId, plans, onClose, onChanged }) {
+function AdminDetail({ tenantId, plans, isSuper, onClose, onChanged }) {
   const { data, error, loading, reload } = useAsync(() => api.platform.tenant(tenantId), [tenantId]);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState(null);
@@ -382,7 +575,9 @@ function AdminDetail({ tenantId, plans, onClose, onChanged }) {
                 </div>
                 <button style={btn} disabled={busy} onClick={() => setEditAdmin(true)}>Edit</button>
                 <button style={btn} disabled={busy} onClick={() => resetPassword(admin.id, admin.email)}>Reset password</button>
-                <button style={btnPrimary} disabled={busy || admin.is_active === false} onClick={() => setImpUser(admin)}>Impersonate</button>
+                {isSuper && (
+                  <button style={btnPrimary} disabled={busy || admin.is_active === false} onClick={() => setImpUser(admin)}>Impersonate</button>
+                )}
               </div>
             ) : <Muted>No admin login found for this workspace.</Muted>}
           </Section>
@@ -398,14 +593,14 @@ function AdminDetail({ tenantId, plans, onClose, onChanged }) {
                     <StatusPill status={o.status} />
                     <span style={{ fontSize: 12, color: C.textMuted }}>{o.member_count} member{o.member_count === 1 ? '' : 's'}</span>
                   </div>
-                  {members.map(u => <UserRow key={u.id} u={u} busy={busy} onImpersonate={() => setImpUser(u)} onReset={() => resetPassword(u.id, u.email)} />)}
+                  {members.map(u => <UserRow key={u.id} u={u} busy={busy} canImpersonate={isSuper} onImpersonate={() => setImpUser(u)} onReset={() => resetPassword(u.id, u.email)} />)}
                 </div>
               );
             })}
             {tenantWideUsers.length > 0 && (
               <div style={{ border: `1px dashed ${C.border}`, borderRadius: 10, padding: 12 }}>
                 <div style={{ fontWeight: 700, marginBottom: 10, fontSize: 13, color: C.textSecondary }}>Tenant-wide users</div>
-                {tenantWideUsers.map(u => <UserRow key={u.id} u={u} busy={busy} onImpersonate={() => setImpUser(u)} onReset={() => resetPassword(u.id, u.email)} />)}
+                {tenantWideUsers.map(u => <UserRow key={u.id} u={u} busy={busy} canImpersonate={isSuper} onImpersonate={() => setImpUser(u)} onReset={() => resetPassword(u.id, u.email)} />)}
               </div>
             )}
           </Section>
@@ -420,7 +615,7 @@ function AdminDetail({ tenantId, plans, onClose, onChanged }) {
   );
 }
 
-function UserRow({ u, busy, onImpersonate, onReset }) {
+function UserRow({ u, busy, canImpersonate, onImpersonate, onReset }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 0' }}>
       <UserAvatar name={u.display_name || u.username} small />
@@ -429,7 +624,9 @@ function UserRow({ u, busy, onImpersonate, onReset }) {
         <div style={{ fontSize: 11.5, color: C.textMuted }}>{u.email} · {u.role}{u.is_active === false ? ' · disabled' : ''}</div>
       </div>
       <button style={{ ...btn, padding: '4px 9px', fontSize: 12 }} disabled={busy} onClick={onReset}>Reset pw</button>
-      <button style={{ ...btnPrimary, padding: '4px 10px', fontSize: 12 }} disabled={busy || u.is_active === false} onClick={onImpersonate}>Impersonate</button>
+      {canImpersonate && (
+        <button style={{ ...btnPrimary, padding: '4px 10px', fontSize: 12 }} disabled={busy || u.is_active === false} onClick={onImpersonate}>Impersonate</button>
+      )}
     </div>
   );
 }

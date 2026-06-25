@@ -28,18 +28,27 @@ async function tenantContext(req, _res, next) {
   try {
     // One round-trip: the user's tenant + whether they hold the super_admin role.
     const { rows } = await pool.query(
-      `SELECT u.tenant_id,
+      `SELECT u.tenant_id, u.reseller_id,
               EXISTS (
                 SELECT 1 FROM coexistence.user_roles ur
                   JOIN coexistence.roles r ON r.id = ur.role_id
                  WHERE ur.user_id = u.id AND r.key = 'super_admin'
-              ) AS is_super_admin
+              ) AS is_super_admin,
+              EXISTS (
+                SELECT 1 FROM coexistence.user_roles ur
+                  JOIN coexistence.roles r ON r.id = ur.role_id
+                 WHERE ur.user_id = u.id AND r.key = 'reseller_admin'
+              ) AS is_reseller_admin
          FROM coexistence.z_chat_users u
         WHERE u.id = $1`,
       [req.user.id]
     );
     const row = rows[0] || {};
     req.isSuperAdmin = row.is_super_admin === true;
+    // White-label partner operator: scoped platform owner over their own admins.
+    // The platform API filters every tenant/plan/stat read by req.resellerId.
+    req.isResellerAdmin = row.is_reseller_admin === true;
+    req.resellerId = row.reseller_id ?? null;
 
     // Resolve the operating tenant. Super admins may impersonate a tenant via
     // X-Tenant-Id; otherwise the user is pinned to their own tenant.

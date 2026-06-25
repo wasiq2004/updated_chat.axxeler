@@ -382,6 +382,20 @@ router.put('/broadcasts/:id', requirePermission('bulk-message'), async (req, res
       variable_mapping, message_type, body, url, media_library_id, caption,
     } = req.body;
 
+    const updParams = [
+      from_number || null,
+      recipient_numbers ? JSON.stringify(recipient_numbers) : null,
+      template_id || null,
+      test_number || null,
+      name || null,
+      variable_mapping ? JSON.stringify(variable_mapping) : null,
+      message_type || null,
+      body || null,
+      url || null,
+      media_library_id || null,
+      caption || null,
+      req.params.id,
+    ];
     const { rows } = await pool.query(
       `UPDATE coexistence.broadcasts SET
         from_number = COALESCE($1, from_number),
@@ -396,23 +410,11 @@ router.put('/broadcasts/:id', requirePermission('bulk-message'), async (req, res
         media_library_id = COALESCE($10, media_library_id),
         caption = COALESCE($11, caption),
         updated_at = NOW()
-       WHERE id = $12
+       WHERE id = $12${scopeClause(req, null, updParams)}
        RETURNING *`,
-      [
-        from_number || null,
-        recipient_numbers ? JSON.stringify(recipient_numbers) : null,
-        template_id || null,
-        test_number || null,
-        name || null,
-        variable_mapping ? JSON.stringify(variable_mapping) : null,
-        message_type || null,
-        body || null,
-        url || null,
-        media_library_id || null,
-        caption || null,
-        req.params.id,
-      ]
+      updParams
     );
+    if (rows.length === 0) return res.status(404).json({ error: 'Broadcast not found' });
     res.json(rows[0]);
   } catch (err) {
     console.error('[broadcasts] PUT /broadcasts/:id error:', err.message);
@@ -502,9 +504,10 @@ router.post('/broadcasts/:id/send', requirePermission('bulk-message'), async (re
       }
     }
 
+    const sendingParams = [req.params.id];
     await pool.query(
-      `UPDATE coexistence.broadcasts SET status = 'SENDING', updated_at = NOW() WHERE id = $1`,
-      [req.params.id]
+      `UPDATE coexistence.broadcasts SET status = 'SENDING', updated_at = NOW() WHERE id = $1${scopeClause(req, null, sendingParams)}`,
+      sendingParams
     );
 
     let enqueued = 0;
@@ -535,9 +538,10 @@ router.post('/broadcasts/:id/send', requirePermission('bulk-message'), async (re
       }
     }
 
+    const sentParams = [req.params.id];
     await pool.query(
-      `UPDATE coexistence.broadcasts SET status = 'SENT', updated_at = NOW() WHERE id = $1`,
-      [req.params.id]
+      `UPDATE coexistence.broadcasts SET status = 'SENT', updated_at = NOW() WHERE id = $1${scopeClause(req, null, sentParams)}`,
+      sentParams
     );
 
     const data = await getBroadcastWithLogs(req.params.id, req);

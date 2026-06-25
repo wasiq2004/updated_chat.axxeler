@@ -53,17 +53,19 @@ export default function App() {
     if (!routeParts[0]) replaceRoute('home');
   }, [routeParts, replaceRoute]);
 
-  // Super Admin console is platform-only: redirect anyone else away from it.
+  // The platform/reseller console is for the platform owner OR a white-label
+  // reseller admin — redirect anyone else away from it.
+  const isConsoleUser = !!(user && (user.isSuperAdmin || user.isResellerAdmin));
   useEffect(() => {
-    if (user && page === 'super-admin' && !user.isSuperAdmin) setPage('home');
+    if (user && page === 'super-admin' && !isConsoleUser) setPage('home');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page, user]);
 
-  // A super admin has NO operational workspace — they only monitor/configure the
-  // platform. Keep them inside the Super Admin console; to actually work inside an
-  // admin's workspace they impersonate (which clears isSuperAdmin for the session).
+  // Console operators (platform owner & resellers) have NO operational workspace —
+  // they only monitor/configure. Keep them inside the console; to actually work
+  // inside an admin's workspace they impersonate (which clears these flags).
   useEffect(() => {
-    if (user?.isSuperAdmin && !user.impersonation && page !== 'super-admin') setPage('super-admin');
+    if (isConsoleUser && !user.impersonation && page !== 'super-admin') setPage('super-admin');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page, user]);
 
@@ -229,10 +231,10 @@ export default function App() {
       case 'about': return <AboutUsPage />;
       case 'billing': return <BillingPage entitlements={entitlements} />;
       case 'organizations': return <OrganizationsPage onOrgsChanged={loadOrgs} activeOrg={activeOrg} />;
-      case 'branding': return <BrandingPage onSaved={loadEntitlements} />;
+      case 'branding': return <BrandingPage onSaved={loadEntitlements} managedByReseller={entitlements?.brandingManagedByReseller} />;
       case 'audit': return <AuditPage />;
       case 'admin-settings': return <AdminSettingsPage onLogout={handleLogout} onNavigate={setPage} subParts={subParts} navigate={navigate} user={user} />;
-      case 'super-admin': return user.isSuperAdmin ? <SuperAdminPage /> : <HomePage user={user} onPageChange={setPage} />;
+      case 'super-admin': return isConsoleUser ? <SuperAdminPage user={user} /> : <HomePage user={user} onPageChange={setPage} />;
       default: return <HomePage user={user} onPageChange={setPage} />;
     }
   };

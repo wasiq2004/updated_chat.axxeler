@@ -8,10 +8,20 @@ import { api } from '../api.js';
 import { C, FONT } from '../constants.js';
 import { PLAN_META, FEATURE_LABELS, formatLimit } from '../lib/plans.js';
 
-const ORDERED_FEATURES = [
+// Preferred display order; any feature the backend catalog exposes that isn't
+// listed here is appended so newly-added/custom features still show in the grid.
+const PREFERRED_FEATURE_ORDER = [
   'inbox', 'crm', 'deals', 'campaigns', 'broadcast', 'automations',
   'ai_agents', 'analytics', 'api_access', 'webhooks', 'white_label', 'marketplace',
 ];
+function orderedFeatures(catalog) {
+  const known = (catalog?.features || []).map(f => f.key);
+  const seen = new Set();
+  const out = [];
+  for (const k of PREFERRED_FEATURE_ORDER) { if (known.length === 0 || known.includes(k)) { out.push(k); seen.add(k); } }
+  for (const k of known) { if (!seen.has(k)) out.push(k); }
+  return out;
+}
 
 function UsageMeter({ icon: Icon, label, used, max }) {
   const unlimited = max == null;
@@ -62,6 +72,7 @@ export default function BillingPage({ entitlements: initial }) {
   const currentMeta = currentKey ? PLAN_META[currentKey] : null;
   const currentTier = currentMeta?.tier ?? -1;
   const limits = ent.limits || {};
+  const featureRows = orderedFeatures(ent.catalog);
 
   return (
     <div style={{ padding: '28px 32px 48px', fontFamily: FONT, color: C.text, maxWidth: 1180, margin: '0 auto', width: '100%' }}>
@@ -172,7 +183,7 @@ export default function BillingPage({ entitlements: initial }) {
               </div>
 
               <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 12, display: 'flex', flexDirection: 'column', gap: 7 }}>
-                {ORDERED_FEATURES.map(fk => {
+                {featureRows.map(fk => {
                   const on = feats.includes(fk);
                   return (
                     <div key={fk} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: on ? C.text : C.textMuted, opacity: on ? 1 : 0.55 }}>

@@ -7,7 +7,7 @@ const { isStrong } = require('./util/instanceSecrets');
 
 async function loadUserSession(userId) {
   const { rows } = await pool.query(
-    `SELECT id, username, email, display_name, role, permissions, is_active, last_login_at, tenant_id
+    `SELECT id, username, email, display_name, role, permissions, is_active, last_login_at, tenant_id, reseller_id
        FROM coexistence.z_chat_users WHERE id = $1`,
     [userId]
   );
@@ -17,18 +17,22 @@ async function loadUserSession(userId) {
     `SELECT wa_number FROM coexistence.user_wa_assignments WHERE user_id = $1`,
     [userId]
   );
-  // SaaS: surface whether this is a platform super admin so the UI can show the
-  // platform console. Tolerate the RBAC tables not existing yet (pre-migration).
+  // SaaS: surface whether this is a platform super admin (full platform owner) or
+  // a white-label reseller admin (scoped partner) so the UI shows the right
+  // console. Tolerate the RBAC tables not existing yet (pre-migration).
   let isSuperAdmin = false;
+  let isResellerAdmin = false;
   try {
-    const { rows: sa } = await pool.query(
-      `SELECT 1 FROM coexistence.user_roles ur
+    const { rows: roleRows } = await pool.query(
+      `SELECT r.key FROM coexistence.user_roles ur
          JOIN coexistence.roles r ON r.id = ur.role_id
-        WHERE ur.user_id = $1 AND r.key = 'super_admin' LIMIT 1`,
+        WHERE ur.user_id = $1 AND r.key IN ('super_admin', 'reseller_admin')`,
       [userId]
     );
-    isSuperAdmin = sa.length > 0;
-  } catch { /* RBAC tables not migrated yet — treat as non-super-admin */ }
+    const keys = new Set(roleRows.map(r => r.key));
+    isSuperAdmin = keys.has('super_admin');
+    isResellerAdmin = keys.has('reseller_admin');
+  } catch { /* RBAC tables not migrated yet — treat as non-privileged */ }
   return {
     id: u.id,
     username: u.username,
@@ -40,7 +44,9 @@ async function loadUserSession(userId) {
     pages: Array.from(effectivePages({ role: u.role, permissions: u.permissions })),
     assignedWaNumbers: waRows.map(r => r.wa_number),
     tenantId: u.tenant_id ?? null,
+    resellerId: u.reseller_id ?? null,
     isSuperAdmin,
+    isResellerAdmin,
   };
 }
 

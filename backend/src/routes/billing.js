@@ -49,7 +49,16 @@ router.get('/billing/entitlements', async (req, res) => {
     const { rows: tRows } = await pool.query(
       'SELECT name, branding FROM coexistence.tenants WHERE id = $1', [req.tenantId]
     );
-    const branding = tRows[0]?.branding || {};
+    // White-label: if this tenant belongs to a reseller (partner), the RESELLER's
+    // branding is the platform identity the user sees — it takes precedence over
+    // the tenant's own branding.
+    const { rows: rbRows } = await pool.query(
+      `SELECT r.branding FROM coexistence.resellers r
+         JOIN coexistence.tenants t ON t.reseller_id = r.id
+        WHERE t.id = $1 AND r.status = 'active' AND r.deleted_at IS NULL`,
+      [req.tenantId]
+    );
+    const branding = rbRows[0]?.branding || tRows[0]?.branding || {};
     const [users, orgs, contacts] = await Promise.all([
       checkLimit(req.tenantId, 'max_users'),
       checkLimit(req.tenantId, 'max_organizations'),
@@ -64,6 +73,9 @@ router.get('/billing/entitlements', async (req, res) => {
         primaryColor: /^#[0-9a-fA-F]{6}$/.test(branding.primaryColor || '') ? branding.primaryColor : null,
         logoUrl: typeof branding.logoUrl === 'string' ? branding.logoUrl : null,
       },
+      // When the tenant is under a white-label reseller, the reseller's branding
+      // wins — so the tenant's own BrandingPage is read-only / hidden.
+      brandingManagedByReseller: rbRows.length > 0,
       plan: ent ? { key: ent.planKey } : null,
       status: ent?.status || null,
       // Billing-period state drives the grace-warning banner and the locked

@@ -6,6 +6,8 @@ import OrgSwitcher from './OrgSwitcher.jsx';
 
 export default function Topbar({ user, onLogout, onNavigate, orgs, activeOrg, onOrgChange, branding }) {
   const isAdmin = user?.role === 'admin';
+  // Platform owner / white-label reseller: console-only, no operational pages.
+  const isConsoleUser = !!(user?.isSuperAdmin || user?.isResellerAdmin);
   const logoSrc = branding?.logoUrl || '/logo.png';
   const brandName = branding?.brandName || 'Zen Chat';
   const [userOpen, setUserOpen] = useState(false);
@@ -167,13 +169,18 @@ export default function Topbar({ user, onLogout, onNavigate, orgs, activeOrg, on
                 </div>
               </div>
               {[
-                { label: 'Plan & billing', icon: <CreditCard size={14} />, action: () => { setUserOpen(false); onNavigate('billing'); }, color: C.text },
-                ...(isAdmin ? [
-                  { label: 'Organizations', icon: <Building2 size={14} />, action: () => { setUserOpen(false); onNavigate('organizations'); }, color: C.text },
-                  { label: 'White-label',   icon: <Palette size={14} />,   action: () => { setUserOpen(false); onNavigate('branding'); },      color: C.text },
-                  { label: 'Audit log',     icon: <ScrollText size={14} />, action: () => { setUserOpen(false); onNavigate('audit'); },         color: C.text },
-                ] : []),
-                { label: 'Settings', icon: <Settings size={14} />, action: () => { setUserOpen(false); onNavigate('admin-settings'); }, color: C.text },
+                // Platform/reseller console users have no operational workspace —
+                // every page below force-redirects them back to the console, so
+                // show only Sign out for them.
+                ...(isConsoleUser ? [] : [
+                  { label: 'Plan & billing', icon: <CreditCard size={14} />, action: () => { setUserOpen(false); onNavigate('billing'); }, color: C.text },
+                  ...(isAdmin ? [
+                    { label: 'Organizations', icon: <Building2 size={14} />, action: () => { setUserOpen(false); onNavigate('organizations'); }, color: C.text },
+                    { label: 'White-label',   icon: <Palette size={14} />,   action: () => { setUserOpen(false); onNavigate('branding'); },      color: C.text },
+                    { label: 'Audit log',     icon: <ScrollText size={14} />, action: () => { setUserOpen(false); onNavigate('audit'); },         color: C.text },
+                  ] : []),
+                  { label: 'Settings', icon: <Settings size={14} />, action: () => { setUserOpen(false); onNavigate('admin-settings'); }, color: C.text },
+                ]),
                 { label: 'Sign out',  icon: <LogOut size={14} />,   action: () => { setUserOpen(false); onLogout(); },                  color: C.primaryHover },
               ].map(({ label, icon, action, color }) => (
                 <button key={label} onClick={action} style={{

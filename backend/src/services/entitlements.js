@@ -156,9 +156,11 @@ function featureGate(featureKey) {
       });
     } catch (err) {
       console.error('[entitlements] featureGate error:', err.message);
-      // Fail-closed on a real feature gate would risk blocking the app during
-      // the rollout; fail-open + log keeps the live app working in Phase 1–4.
-      return next();
+      // Fail CLOSED: this gate is the only enforcement of plan/expiry on premium
+      // routes, so on an entitlement-lookup error we deny rather than silently
+      // grant a feature the tenant may not be entitled to. Super admins already
+      // short-circuited above, so this never blocks platform operators.
+      return res.status(503).json({ error: 'Could not verify your plan entitlements. Please try again.' });
     }
   };
 }

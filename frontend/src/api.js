@@ -21,8 +21,11 @@ async function req(path, opts = {}) {
     ...opts,
   });
   if (!res.ok) {
+    // Prefer the API's JSON { error } message; fall back to raw text / status.
     const text = await res.text().catch(() => '');
-    throw new Error(`${res.status} ${text}`);
+    let message = text;
+    try { const j = JSON.parse(text); if (j && j.error) message = j.error; } catch { /* not JSON */ }
+    throw new Error(message || `Request failed (${res.status})`);
   }
   return res.json();
 }
@@ -37,6 +40,8 @@ export const api = {
       req('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
     logout: () => req('/auth/logout', { method: 'POST' }),
   },
+  // Public white-label login branding by reseller slug (?w=<slug>). No auth.
+  brandingBySlug: (slug) => req(`/branding/by-slug/${encodeURIComponent(slug)}`),
   dashboard: (range = '7d') => req(`/dashboard?range=${encodeURIComponent(range)}`),
   dashboardDetails: (metric, range = '7d') =>
     req(`/dashboard/details?metric=${encodeURIComponent(metric)}&range=${encodeURIComponent(range)}`),
@@ -399,6 +404,13 @@ export const api = {
     createPlan: (data) => req('/platform/plans', { method: 'POST', body: JSON.stringify(data) }),
     setPlanFeatures: (id, features) => req(`/platform/plans/${id}/features`, { method: 'PUT', body: JSON.stringify({ features }) }),
     features: () => req('/platform/features'),
+    // White-label resellers (platform owner)
+    resellers: () => req('/platform/resellers'),
+    createReseller: (data) => req('/platform/resellers', { method: 'POST', body: JSON.stringify(data) }),
+    updateReseller: (id, data) => req(`/platform/resellers/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+    // A reseller managing itself (branding)
+    myReseller: () => req('/platform/my-reseller'),
+    updateMyReseller: (data) => req('/platform/my-reseller', { method: 'PATCH', body: JSON.stringify(data) }),
     audit: (limit = 100) => req(`/platform/audit?limit=${limit}`),
     tenantUsers: (id) => req(`/platform/tenants/${id}/users`),
     impersonate: (targetUserId, reason) =>

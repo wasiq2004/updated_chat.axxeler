@@ -19,6 +19,10 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    # AOF persistence so queued/in-flight BullMQ jobs (outbound sends, media,
+    # agent runs) survive a Redis restart; noeviction so queue keys are never
+    # dropped under memory pressure.
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory-policy", "noeviction"]
     volumes:
       - redisdata:/data
     healthcheck:
@@ -47,6 +51,14 @@ services:
       - secrets:/app/data
       - media:/app/media
       - uploads:/app/uploads
+    # Boot does migrations + seeding before listening; this healthcheck lets the
+    # frontend wait until the API is actually ready (not just started).
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3011/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
     depends_on:
       z-chat-db:
         condition: service_healthy
@@ -63,7 +75,8 @@ services:
     expose:
       - "80"
     depends_on:
-      - z-chat-backend
+      z-chat-backend:
+        condition: service_healthy
     networks:
       - internal
       - traefik          # must be on the same network as Traefik to be reachable

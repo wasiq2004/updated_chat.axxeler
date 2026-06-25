@@ -16,6 +16,7 @@
 
 const { Router } = require('express');
 const bus = require('../events');
+const pool = require('../db');
 
 const router = Router();
 
@@ -23,7 +24,7 @@ const router = Router();
 // a one-liner here + a bus.emit() at the source.
 const FORWARDED_EVENTS = ['message-status', 'message-new'];
 
-router.get('/events', (req, res) => {
+router.get('/events', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
@@ -33,8 +34,33 @@ router.get('/events', (req, res) => {
   // Initial handshake — also nudges proxies that wait for the first byte.
   res.write(`event: hello\ndata: {"ts":${Date.now()},"userId":${req.user?.id ?? null}}\n\n`);
 
+  // Tenant isolation: the event bus is process-global, so only forward events
+  // for THIS tenant's WhatsApp numbers. Resolve them once at connect time. A
+  // null tenant (legacy single-tenant install / super admin) is unfiltered; a
+  // lookup failure falls back to unfiltered so a transient DB hiccup never
+  // silently freezes the live chat (it self-heals on reconnect / the 15s poll).
+  let waSet = null;
+  if (req.tenantId != null) {
+    try {
+      const { rows } = await pool.query(
+        `SELECT display_phone_number FROM coexistence.whatsapp_accounts WHERE tenant_id = $1`,
+        [req.tenantId]
+      );
+      waSet = new Set(rows.map(r => String(r.display_phone_number || '').replace(/\D/g, '')).filter(Boolean));
+    } catch (err) {
+      console.error('[events] wa-number scope lookup failed (streaming unfiltered):', err.message);
+      waSet = null;
+    }
+  }
+  const allowed = (payload) => {
+    if (waSet == null) return true; // no tenant context → unfiltered (legacy)
+    const wa = String(payload?.waNumber || '').replace(/\D/g, '');
+    return wa !== '' && waSet.has(wa);
+  };
+
   const writeEvent = (event, data) => {
     if (res.writableEnded) return;
+    if (!allowed(data)) return; // not this tenant's conversation — skip
     try {
       res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
     } catch {

@@ -92,10 +92,20 @@ async function requireSuperAdmin(req, res, next) {
   }
 }
 
+// Allow the platform super admin OR a white-label reseller admin. Used to gate
+// the shared Super Admin console — the routes themselves scope reads by
+// req.resellerId so a reseller only ever sees their own admins.
+function requirePlatformOrReseller(req, res, next) {
+  if (!req.user?.id) return res.status(401).json({ error: 'Unauthorized' });
+  if (req.isSuperAdmin === true || req.isResellerAdmin === true) return next();
+  return res.status(403).json({ error: 'Platform or reseller access required' });
+}
+
 module.exports = {
   getUserPermissions,
   userHasPermission,
   isSuperAdmin,
   requirePerm,
   requireSuperAdmin,
+  requirePlatformOrReseller,
 };

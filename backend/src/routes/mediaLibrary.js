@@ -231,10 +231,11 @@ router.delete('/media-library/:id', requirePermission('media-library'), async (r
 router.get('/media-library/:id/download', async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
+    const params = [id];
     const { rows } = await pool.query(
       `SELECT storage_key, mime_type, original_name, name
-         FROM coexistence.media_library WHERE id = $1 AND deleted_at IS NULL`,
-      [id]
+         FROM coexistence.media_library WHERE id = $1 AND deleted_at IS NULL${scopeClause(req, null, params)}`,
+      params
     );
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
     const buf = await storage.getObjectBuffer(rows[0].storage_key);

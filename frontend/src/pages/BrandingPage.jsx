@@ -9,7 +9,7 @@ import { C, FONT } from '../constants.js';
 
 const SWATCHES = ['#E22635', '#2563EB', '#7C3AED', '#059669', '#EA580C', '#0891B2', '#DB2777', '#475569'];
 
-export default function BrandingPage({ onSaved }) {
+export default function BrandingPage({ onSaved, managedByReseller }) {
   const [form, setForm] = useState({ brandName: '', primaryColor: '', logoUrl: '' });
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -56,6 +56,12 @@ export default function BrandingPage({ onSaved }) {
       <p style={{ fontSize: 13.5, color: C.textSecondary, margin: '0 0 24px', maxWidth: 560, lineHeight: 1.5 }}>
         Make the platform yours. Changes apply across the workspace for everyone on your team.
       </p>
+
+      {managedByReseller && (
+        <div style={{ color: C.text, background: `${C.amber}1a`, border: `1px solid ${C.amber}55`, borderRadius: 9, padding: '11px 13px', fontSize: 13, marginBottom: 16, lineHeight: 1.5 }}>
+          Your workspace is provided by a partner, so branding is managed by them and shown across the app. Any changes you save here won’t be visible to your users.
+        </div>
+      )}
 
       {error && <div style={{ color: '#DC2626', background: '#DC26261a', border: '1px solid #DC262633', borderRadius: 9, padding: '10px 12px', fontSize: 13, marginBottom: 16 }}>{error}</div>}
 

@@ -30,6 +30,12 @@ UPDATE coexistence.oauth_credentials oc
    SET tenant_id = u.tenant_id
   FROM coexistence.z_chat_users u
  WHERE oc.user_id = u.id AND oc.tenant_id IS NULL;
+-- Fallback: any connection still unstamped (e.g. owned by a tenant-less user)
+-- goes to the default tenant so it stays visible to tenant-scoped MCP discovery
+-- (mirrors the mcp_api_keys fallback below).
+UPDATE coexistence.oauth_credentials
+   SET tenant_id = (SELECT id FROM coexistence.tenants ORDER BY id LIMIT 1)
+ WHERE tenant_id IS NULL;
 CREATE INDEX IF NOT EXISTS idx_oauth_credentials_tenant
   ON coexistence.oauth_credentials(tenant_id);
 
