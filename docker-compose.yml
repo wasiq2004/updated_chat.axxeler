@@ -1,0 +1,102 @@
+services:
+  z-chat-db:
+    image: postgres:15
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-z-chat}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks:
+      - internal
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    networks:
+      - internal
+
+  z-chat-backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "3011"
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-z-chat}@z-chat-db:5432/postgres
+      REDIS_URL: redis://redis:6379
+      Z_CHAT_DATA_DIR: /app/data
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - secrets:/app/data
+      - media:/app/media
+      - uploads:/app/uploads
+    depends_on:
+      z-chat-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - internal
+
+  z-chat-frontend:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    # NO host ports — Traefik routes to this container directly over Docker network
+    expose:
+      - "80"
+    depends_on:
+      - z-chat-backend
+    networks:
+      - internal
+      - traefik          # must be on the same network as Traefik to be reachable
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.zchat.rule=Host(`chat.axxeler.in`)"
+      - "traefik.http.routers.zchat.entrypoints=websecure"
+      - "traefik.http.routers.zchat.tls=true"
+      - "traefik.http.routers.zchat.tls.certresolver=mytlschallenge"
+      - "traefik.http.services.zchat.loadbalancer.server.port=80"
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    profiles: ["tunnel"]
+    restart: unless-stopped
+    command: tunnel --no-autoupdate --url http://z-chat-frontend:80
+    depends_on:
+      - z-chat-frontend
+    networks:
+      - internal
+
+volumes:
+  pgdata:
+  redisdata:
+  secrets:
+  media:
+  uploads:
+
+networks:
+  internal:
+    # Private network for inter-service communication only
+    driver: bridge
+  traefik:
+    # Join the existing network where Traefik lives
+    external: true
+    name: n8n_default   # ← verify this name (see step below)

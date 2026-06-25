@@ -1,0 +1,290 @@
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+/* ─── Light theme · pure white · logo red (#E22635) + near-black ───────── */
+:root {
+  --c-pageBg: #FFFFFF;
+  --c-sidebarBg: rgba(255,255,255,.82);
+  --c-sidebarBorder: rgba(0,0,0,.08);
+  --c-headerBg: rgba(255,255,255,.85);
+  --c-headerText: #0A0A0A;
+  --c-headerMuted: #71717A;
+  --c-headerBorder: rgba(0,0,0,.08);
+  --c-headerSurface: rgba(0,0,0,.04);
+  --c-cardBg: #FFFFFF;
+  --c-border: rgba(0,0,0,.10);
+  --c-borderDark: rgba(0,0,0,.14);
+  --c-text: #0A0A0A;
+  --c-textSecondary: #52525B;
+  --c-textMuted: #71717A;
+  --c-primary: #E22635;
+  --c-primaryHover: #C81E2B;
+  --c-primaryLight: rgba(226,38,53,.10);
+  --c-primaryText: #FFFFFF;
+  --c-purple: #7C3AED;
+  --c-green: #16A34A;
+  --c-amber: #D97706;
+  --c-error: #DC2626;
+  --c-shadowSm: 0 1px 2px rgba(0,0,0,.06), 0 1px 3px rgba(0,0,0,.08);
+  --c-shadowMd: 0 8px 24px rgba(0,0,0,.10);
+  --c-shadowLg: 0 24px 60px rgba(0,0,0,.18);
+  --c-waBg: #EFEAE2;
+  --c-incomingBg: #FFFFFF;
+  --c-incomingText: #111111;
+  --c-outgoingBg: #E22635;
+  --c-outgoingText: #FFFFFF;
+  --c-chatBg: #ECE5DD;
+  --c-statusDelivered: #53bdeb;
+  --c-statusRead: #53bdeb;
+  --c-statusSent: #8696a0;
+  --c-surface: #FAFAFA;
+  --c-surfaceAlt: #F4F4F5;
+  --c-hover: rgba(0,0,0,.04);
+  --c-chatPanel: #FFFFFF;
+  --c-chatWall: #ECE5DD;
+  --c-primaryGradient: linear-gradient(135deg, #E22635 0%, #FF4D5A 100%);
+}
+
+body {
+  font-family: 'Manrope', 'Plus Jakarta Sans', Inter, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background:
+    radial-gradient(circle at 18% -8%, rgba(226,38,53,.07), transparent 30%),
+    radial-gradient(circle at 82% 0%, rgba(226,38,53,.04), transparent 28%),
+    var(--c-pageBg);
+  color: var(--c-text);
+}
+
+input, button, textarea, select {
+  font-family: inherit;
+}
+
+input, textarea, select {
+  color: var(--c-text);
+  border-color: var(--c-border);
+  caret-color: var(--c-primary);
+  transition: border-color .16s ease, box-shadow .16s ease, background .16s ease;
+}
+
+::placeholder {
+  color: var(--c-textMuted);
+  opacity: 1;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(18px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fadeInDown {
+  from { opacity: 0; transform: translateY(-12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fadeInLeft {
+  from { opacity: 0; transform: translateX(-16px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(.93); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes scaleInFast {
+  from { opacity: 0; transform: scale(.96) translateY(-4px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+@keyframes slideInRight {
+  from { opacity: 0; transform: translateX(24px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes slideInLeft {
+  from { opacity: 0; transform: translateX(-24px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes popIn {
+  0% { opacity: 0; transform: scale(.85); }
+  60% { transform: scale(1.04); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+@keyframes shimmer {
+  0% { background-position: -600px 0; }
+  100% { background-position: 600px 0; }
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes pulseGlow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(226,38,53,.28); }
+  50% { box-shadow: 0 0 0 6px rgba(226,38,53,0); }
+}
+
+@keyframes ripple {
+  from { transform: scale(0); opacity: .35; }
+  to { transform: scale(3); opacity: 0; }
+}
+
+.anim-fade-in { animation: fadeIn .2s ease-out both; }
+.anim-fade-in-up { animation: fadeInUp .28s ease-out both; }
+.anim-fade-in-down { animation: fadeInDown .22s ease-out both; }
+.anim-fade-in-left { animation: fadeInLeft .26s ease-out both; }
+.anim-scale-in { animation: scaleIn .2s cubic-bezier(.34,1.56,.64,1) both; }
+.anim-pop-in { animation: popIn .24s cubic-bezier(.34,1.56,.64,1) both; }
+.anim-slide-right { animation: slideInRight .26s ease-out both; }
+.anim-slide-left { animation: slideInLeft .26s ease-out both; }
+
+.stagger > *:nth-child(1) { animation-delay: 0ms; }
+.stagger > *:nth-child(2) { animation-delay: 60ms; }
+.stagger > *:nth-child(3) { animation-delay: 120ms; }
+.stagger > *:nth-child(4) { animation-delay: 180ms; }
+.stagger > *:nth-child(5) { animation-delay: 240ms; }
+.stagger > *:nth-child(6) { animation-delay: 300ms; }
+
+button {
+  transition: transform .16s ease, opacity .16s ease, box-shadow .18s ease, background .18s ease, border-color .18s ease, color .18s ease;
+}
+
+button:active:not(:disabled) {
+  transform: scale(.96);
+}
+
+a {
+  transition: color .15s ease, opacity .15s ease;
+}
+
+input:focus, textarea:focus, select:focus {
+  border-color: rgba(226,38,53,.72) !important;
+  box-shadow: 0 0 0 3px rgba(226,38,53,.18) !important;
+}
+
+.skeleton {
+  background: linear-gradient(90deg, #ECECEC 25%, #F5F5F5 50%, #ECECEC 75%);
+  background-size: 600px 100%;
+  animation: shimmer 1.4s infinite linear;
+  border-radius: 10px;
+}
+
+.dropdown-enter {
+  animation: scaleInFast .18s cubic-bezier(.16,1,.3,1) both;
+  transform-origin: top right;
+}
+
+.page-enter {
+  animation: fadeIn .2s ease-out both;
+}
+
+.card-hover {
+  transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
+}
+
+.card-hover:hover {
+  transform: scale(1.02);
+  box-shadow: var(--c-shadowMd);
+  border-color: rgba(0,0,0,.16);
+}
+
+.nav-indicator {
+  transition: transform .22s cubic-bezier(.34,1.56,.64,1), opacity .18s ease;
+}
+
+.msg-appear {
+  animation: popIn .22s cubic-bezier(.34,1.56,.64,1) both;
+}
+
+:focus-visible {
+  outline: 2px solid var(--c-primary);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+/* Promote only buttons whose BACKGROUND is the brand primary to the gradient.
+   Scoped to `background:` so ghost buttons (color: primary) and soft tint
+   buttons (background: primaryLight) are left alone and stay readable. */
+button[style*="background: var(--c-primary,"],
+button[style*="background:var(--c-primary,"],
+button[style*="background: var(--c-primaryGradient"],
+button[style*="background:var(--c-primaryGradient"],
+button[style*="background: linear-gradient(135deg, #E22635"],
+button[style*="background:linear-gradient(135deg,#E22635"],
+button[style*="background: #E22635"],
+button[style*="background:#E22635"],
+button[style*="background: #dc2626"],
+button[style*="background:#dc2626"] {
+  background: var(--c-primaryGradient) !important;
+  box-shadow: 0 10px 28px rgba(226,38,53,.24);
+}
+
+table {
+  border-collapse: separate !important;
+  border-spacing: 0;
+}
+
+thead {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+th {
+  background: #F7F7F8 !important;
+  color: var(--c-textSecondary) !important;
+  border-bottom: 1px solid var(--c-border) !important;
+  backdrop-filter: blur(16px);
+}
+
+td {
+  border-bottom-color: var(--c-border) !important;
+}
+
+tbody tr {
+  transition: background .16s ease;
+}
+
+tbody tr:hover {
+  background: rgba(0,0,0,.03) !important;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(0,0,0,.18);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0,0,0,.30);
+  border: 3px solid transparent;
+  background-clip: content-box;
+}

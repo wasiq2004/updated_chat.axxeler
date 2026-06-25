@@ -1,0 +1,40 @@
+{
+  "name": "z-chat-backend",
+  "version": "1.2.0",
+  "author": "Sruthi&Wasiq&Salman",
+  "description": "Zen Chat backend API for WhatsApp chat viewer",
+  "private": true,
+  "license": "LicenseRef-Sustainable-Use-License",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js",
+    "test": "node --test test/"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.104.2",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "bcryptjs": "^3.0.3",
+    "bullmq": "^5.77.6",
+    "cookie-parser": "^1.4.6",
+    "cors": "^2.8.5",
+    "dotenv": "^17.4.2",
+    "exceljs": "^4.4.0",
+    "express": "^4.19.2",
+    "express-rate-limit": "^8.5.2",
+    "googleapis": "^173.0.0",
+    "helmet": "^8.2.0",
+    "ioredis": "^5.11.0",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^2.1.1",
+    "openai": "^6.0.0",
+    "pg": "^8.21.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.4"
+  },
+  "overrides": {
+    "uuid": "^11.1.1"
+  }
+}

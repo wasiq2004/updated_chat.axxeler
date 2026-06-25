@@ -1,0 +1,12 @@
+-- 062: Remove single-account cap — allow multiple WhatsApp Business accounts.
+--
+-- Migration 041 added a unique index on a constant expression (TRUE) which
+-- prevented any second row from being inserted at the DB level. That was a
+-- deliberate product decision, not a technical constraint: the table schema,
+-- FK columns in broadcasts/templates/chat_history, and the frontend number
+-- picker were all designed for N accounts from the start.
+--
+-- Dropping this index (along with the matching API + frontend guards) enables
+-- connecting multiple WABA phone numbers and routing sends / broadcasts /
+-- templates per-account exactly as the original schema intended.
+DROP INDEX IF EXISTS coexistence.whatsapp_accounts_singleton;
