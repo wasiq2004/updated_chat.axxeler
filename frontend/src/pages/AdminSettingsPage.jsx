@@ -1238,6 +1238,37 @@ function RoleBadge({ role }) {
   );
 }
 
+// Operational pages an admin can switch on/off per user ("feature access").
+// Mirrors the Sidebar + backend permissions.js page keys.
+const FEATURE_PAGES = [
+  { id: 'chats', label: 'Chats' },
+  { id: 'contacts', label: 'Contacts' },
+  { id: 'pipelines', label: 'Pipelines' },
+  { id: 'bulk-message', label: 'Bulk Message' },
+  { id: 'template-builder', label: 'Template Builder' },
+  { id: 'chatbot-builder', label: 'Automations' },
+  { id: 'media-library', label: 'Media' },
+];
+// Mirror of backend permissions.js ROLE_PAGE_DEFAULTS (operational subset only),
+// used to render the toggles and to diff into grant/revoke on save.
+const ROLE_DEFAULT_PAGES = {
+  admin: FEATURE_PAGES.map(f => f.id),                       // everything (toggles hidden)
+  bda_sales: ['chats', 'contacts', 'pipelines'],
+  viewer: [],
+};
+function defaultEnabledFor(role) {
+  return (ROLE_DEFAULT_PAGES[role] || []).slice();
+}
+// Resolve a user's currently-enabled operational pages from role defaults + overrides.
+function enabledFromUser(role, permissions) {
+  const out = new Set(defaultEnabledFor(role));
+  const grant = Array.isArray(permissions?.grant) ? permissions.grant : [];
+  const revoke = new Set(Array.isArray(permissions?.revoke) ? permissions.revoke : []);
+  grant.forEach(p => out.add(p));
+  revoke.forEach(p => out.delete(p));
+  return FEATURE_PAGES.map(f => f.id).filter(id => out.has(id));
+}
+
 function UsersTab({ currentUser }) {
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1248,7 +1279,10 @@ function UsersTab({ currentUser }) {
   const [deleteModal, setDeleteModal] = useState({ open: false, user: null });
   const [cred, setCred] = useState(null); // { username, password } shown once
 
-  const blank = { displayName: '', username: '', email: '', role: 'bda_sales', password: '', isActive: true };
+  const blank = {
+    displayName: '', username: '', email: '', role: 'bda_sales', password: '', isActive: true,
+    enabledPages: defaultEnabledFor('bda_sales'), permissions: null,
+  };
   const [form, setForm] = useState(blank);
 
   const load = async () => {
@@ -1267,8 +1301,43 @@ function UsersTab({ currentUser }) {
   const openAdd = () => { setEditing(null); setForm(blank); setShowForm(true); };
   const openEdit = (u) => {
     setEditing(u);
-    setForm({ displayName: u.displayName || '', username: u.username, email: u.email, role: u.role, password: '', isActive: u.isActive !== false });
+    setForm({
+      displayName: u.displayName || '', username: u.username, email: u.email, role: u.role,
+      password: '', isActive: u.isActive !== false,
+      enabledPages: enabledFromUser(u.role, u.permissions), permissions: u.permissions || null,
+    });
     setShowForm(true);
+  };
+
+  // Compute the grant/revoke override (over operational pages) from the toggles,
+  // preserving any existing overrides for non-operational pages (e.g. settings tabs).
+  const buildPermissions = () => {
+    const featureIds = new Set(FEATURE_PAGES.map(f => f.id));
+    const roleDef = new Set(defaultEnabledFor(form.role));
+    const enabled = new Set(form.enabledPages || []);
+    const grant = new Set((form.permissions?.grant || []).filter(p => !featureIds.has(p)));
+    const revoke = new Set((form.permissions?.revoke || []).filter(p => !featureIds.has(p)));
+    for (const f of FEATURE_PAGES) {
+      const on = enabled.has(f.id);
+      const isDefault = roleDef.has(f.id);
+      if (on && !isDefault) grant.add(f.id);
+      if (!on && isDefault) revoke.add(f.id);
+    }
+    return { grant: [...grant], revoke: [...revoke] };
+  };
+
+  // Toggle one operational page on/off for the user being edited.
+  const togglePage = (id) => {
+    setForm(f => {
+      const set = new Set(f.enabledPages || []);
+      if (set.has(id)) set.delete(id); else set.add(id);
+      return { ...f, enabledPages: [...set] };
+    });
+  };
+
+  // When the role changes, reset the toggles to that role's defaults.
+  const changeRole = (role) => {
+    setForm(f => ({ ...f, role, enabledPages: defaultEnabledFor(role) }));
   };
 
   const save = async () => {
@@ -1276,12 +1345,14 @@ function UsersTab({ currentUser }) {
     if (!editing && (!form.username.trim() || !form.email.trim())) { alert('Username and email are required'); return; }
     setSaving(true);
     try {
+      const permissions = form.role === 'admin' ? null : buildPermissions();
       if (editing) {
         await api.users.update(editing.id, {
           displayName: form.displayName.trim(),
           email: form.email.trim(),
           role: form.role,
           isActive: form.isActive,
+          permissions,
         });
       } else {
         const created = await api.users.create({
@@ -1290,6 +1361,7 @@ function UsersTab({ currentUser }) {
           displayName: form.displayName.trim(),
           role: form.role,
           password: form.password.trim() || undefined,
+          permissions,
         });
         // Show the (possibly generated) password once.
         setCred({ username: created.username, password: created.password });
@@ -1434,7 +1506,7 @@ function UsersTab({ currentUser }) {
                 <label style={labelStyle}>Role</label>
                 <SearchableSelect
                   value={form.role}
-                  onChange={(val) => setForm({ ...form, role: val })}
+                  onChange={changeRole}
                   options={ROLE_OPTIONS.map(r => ({ value: String(r.value), label: r.label }))}
                   triggerStyle={{ padding: '10px 32px 10px 12px', fontSize: 14 }}
                 />
@@ -1445,6 +1517,35 @@ function UsersTab({ currentUser }) {
               <label style={labelStyle}>Email</label>
               <input value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} placeholder="priya@company.com" style={inputStyle} />
             </div>
+
+            {/* Per-user feature access. Admins always have everything, so the
+                toggles only apply to non-admin roles. */}
+            {form.role !== 'admin' && (
+              <div style={{ marginBottom: 14 }}>
+                <label style={labelStyle}>Feature access</label>
+                <div style={{ fontSize: 11.5, color: C.textMuted, marginBottom: 8 }}>
+                  Enable the parts of the workspace this user can use.
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                  {FEATURE_PAGES.map(f => {
+                    const on = (form.enabledPages || []).includes(f.id);
+                    return (
+                      <label key={f.id} style={{
+                        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+                        padding: '8px 11px', borderRadius: 9, cursor: 'pointer', fontSize: 13,
+                        border: `1px solid ${on ? C.primary : C.border}`,
+                        background: on ? `${C.primary}10` : 'var(--c-cardBg)',
+                        color: C.text, fontWeight: 600,
+                      }}>
+                        <span>{f.label}</span>
+                        <Toggle checked={on} onChange={() => togglePage(f.id)} />
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {!editing && (
               <div style={{ marginBottom: 14 }}>
                 <label style={labelStyle}>Password <span style={{ fontWeight: 400, textTransform: 'none', color: C.textMuted }}>(optional — auto-generated if blank)</span></label>

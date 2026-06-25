@@ -390,6 +390,10 @@ export const api = {
     createTenant: (data) => req('/platform/tenants', { method: 'POST', body: JSON.stringify(data) }),
     updateTenant: (id, data) => req(`/platform/tenants/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
     setSubscription: (id, data) => req(`/platform/tenants/${id}/subscription`, { method: 'POST', body: JSON.stringify(data) }),
+    renew: (id, months = 1) => req(`/platform/tenants/${id}/renew`, { method: 'POST', body: JSON.stringify({ months }) }),
+    updateUser: (userId, data) => req(`/platform/users/${userId}`, { method: 'PATCH', body: JSON.stringify(data) }),
+    resetUserPassword: (userId, password) =>
+      req(`/platform/users/${userId}/reset-password`, { method: 'POST', body: JSON.stringify(password ? { password } : {}) }),
     plans: () => req('/platform/plans'),
     features: () => req('/platform/features'),
     audit: (limit = 100) => req(`/platform/audit?limit=${limit}`),

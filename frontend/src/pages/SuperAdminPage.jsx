@@ -1,9 +1,14 @@
-// Super Admin console (SaaS Phase 3 UI).
+// Super Admin console (SaaS platform-owner surface).
 //
-// Platform-owner surface, reachable at #/super-admin and only shown to users
-// whose session has isSuperAdmin === true. Talks to /api/platform/*. Tabs:
-// Overview (stats), Tenants (list/create/suspend/activate/change plan), Plans,
-// Audit. Kept self-contained with inline styles to match the app's look.
+// Reachable at #/super-admin, only for sessions with isSuperAdmin === true.
+// Talks to /api/platform/*. Tabs:
+//   Overview — platform analytics (tenants, users, MRR, plan mix, expiring soon)
+//   Admins   — create an admin (provisions their login), drill into their
+//              organizations + users, edit credentials, renew/change plan,
+//              suspend/activate, and impersonate.
+//   Plans    — plan catalog
+//   Audit    — platform audit log
+// Self-contained inline styles to match the app's look.
 
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '../api.js';
@@ -11,7 +16,7 @@ import { C, FONT } from '../constants.js';
 
 const TABS = [
   { key: 'overview', label: 'Overview' },
-  { key: 'tenants', label: 'Tenants' },
+  { key: 'admins', label: 'Admins' },
   { key: 'plans', label: 'Plans' },
   { key: 'audit', label: 'Audit Log' },
 ];
@@ -26,17 +31,30 @@ const btn = {
   fontWeight: 600, cursor: 'pointer',
 };
 const btnPrimary = { ...btn, background: C.primary, color: '#fff', border: 'none' };
+const inputStyle = {
+  padding: '9px 11px', borderRadius: 8, border: `1px solid ${C.border}`,
+  fontFamily: FONT, fontSize: 14, background: C.cardBg, color: C.text,
+};
+
+function fmtMoney(n) {
+  const v = Number(n || 0);
+  return `$${v.toLocaleString(undefined, { maximumFractionDigits: v < 100 ? 2 : 0 })}`;
+}
+function fmtDate(d) {
+  return d ? new Date(d).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : '—';
+}
 
 function StatusPill({ status }) {
   const map = {
-    active: C.green, trial: C.amber, suspended: '#DC2626', cancelled: C.textMuted,
+    active: C.green, trial: C.amber, trialing: C.amber, past_due: C.amber,
+    suspended: '#DC2626', cancelled: C.textMuted,
   };
   const color = map[status] || C.textMuted;
   return (
     <span style={{
       fontSize: 11, fontWeight: 700, color, background: `${color}1a`,
       padding: '3px 9px', borderRadius: 20, textTransform: 'capitalize',
-    }}>{status}</span>
+    }}>{String(status || '—').replace('_', ' ')}</span>
   );
 }
 
@@ -44,7 +62,7 @@ export default function SuperAdminPage() {
   const [tab, setTab] = useState('overview');
 
   return (
-    <div style={{ padding: '28px 32px', fontFamily: FONT, color: C.text, maxWidth: 1100, margin: '0 auto', width: '100%' }}>
+    <div style={{ padding: '28px 32px', fontFamily: FONT, color: C.text, maxWidth: 1180, margin: '0 auto', width: '100%' }}>
       <div style={{ marginBottom: 6, fontSize: 12, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: C.primary }}>
         Platform
       </div>
@@ -63,7 +81,7 @@ export default function SuperAdminPage() {
       </div>
 
       {tab === 'overview' && <Overview />}
-      {tab === 'tenants' && <Tenants />}
+      {tab === 'admins' && <Admins />}
       {tab === 'plans' && <Plans />}
       {tab === 'audit' && <Audit />}
     </div>
@@ -83,194 +101,379 @@ function useAsync(fn, deps) {
   return { data, error, loading, reload: run };
 }
 
+// ─── Overview / analytics ────────────────────────────────────────────────────
 function Overview() {
   const { data, error, loading } = useAsync(() => api.platform.stats(), []);
   if (loading) return <Muted>Loading…</Muted>;
   if (error) return <ErrorBox msg={error} />;
-  const items = [
-    ['Tenants', data.tenants], ['Active', data.active_tenants], ['Suspended', data.suspended_tenants],
-    ['Organizations', data.organizations], ['Users', data.users], ['Live subscriptions', data.live_subscriptions],
+
+  const tiles = [
+    ['Monthly revenue', fmtMoney(data.mrr), C.green],
+    ['Admins (tenants)', data.tenants, C.text],
+    ['Active', data.active_tenants, C.green],
+    ['Suspended', data.suspended_tenants, '#DC2626'],
+    ['New this month', data.new_tenants_this_month, C.primary],
+    ['Organizations', data.organizations, C.text],
+    ['Users', data.users, C.text],
+    ['Live subscriptions', data.live_subscriptions, C.text],
+    ['Expiring ≤7 days', data.expiring_soon, C.amber],
   ];
+  const dist = data.plan_distribution || [];
+  const maxCount = Math.max(1, ...dist.map(d => d.tenants));
+
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 14 }}>
-      {items.map(([label, val]) => (
-        <div key={label} style={card}>
-          <div style={{ fontSize: 13, color: C.textSecondary, fontWeight: 600 }}>{label}</div>
-          <div style={{ fontSize: 30, fontWeight: 800, marginTop: 6 }}>{val ?? 0}</div>
-        </div>
-      ))}
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
+        {tiles.map(([label, val, color]) => (
+          <div key={label} style={card}>
+            <div style={{ fontSize: 12.5, color: C.textSecondary, fontWeight: 600 }}>{label}</div>
+            <div style={{ fontSize: 28, fontWeight: 800, marginTop: 6, color }}>{val ?? 0}</div>
+          </div>
+        ))}
+      </div>
+
+      <div style={card}>
+        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 14 }}>Subscriptions by plan</div>
+        {dist.length === 0 ? <Muted>No live subscriptions yet.</Muted> : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {dist.map(d => (
+              <div key={d.plan_key} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <div style={{ width: 110, fontSize: 13, fontWeight: 600 }}>{d.plan_name}</div>
+                <div style={{ flex: 1, height: 22, background: C.pageBg, borderRadius: 6, overflow: 'hidden' }}>
+                  <div style={{
+                    width: `${(d.tenants / maxCount) * 100}%`, height: '100%',
+                    background: C.primary, borderRadius: 6, transition: 'width .4s',
+                  }} />
+                </div>
+                <div style={{ width: 120, textAlign: 'right', fontSize: 12.5, color: C.textSecondary }}>
+                  {d.tenants} · {fmtMoney(d.price_monthly)}/mo
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
 
-function Tenants() {
+// ─── Admins (tenants) ────────────────────────────────────────────────────────
+function Admins() {
   const { data, error, loading, reload } = useAsync(() => api.platform.tenants(), []);
   const { data: plans } = useAsync(() => api.platform.plans(), []);
   const [showCreate, setShowCreate] = useState(false);
-  const [usersFor, setUsersFor] = useState(null); // tenant whose users are shown (impersonation)
-  const [busy, setBusy] = useState(null);
-
-  const planKeys = (plans || []).map(p => p.key);
-
-  async function toggleStatus(t) {
-    const next = t.status === 'suspended' ? 'active' : 'suspended';
-    if (!window.confirm(`${next === 'suspended' ? 'Suspend' : 'Activate'} tenant "${t.name}"?`)) return;
-    setBusy(t.id);
-    try { await api.platform.updateTenant(t.id, { status: next }); reload(); }
-    catch (e) { alert(e.message); } finally { setBusy(null); }
-  }
-
-  async function changePlan(t, planKey) {
-    if (!planKey || planKey === t.plan_key) return;
-    setBusy(t.id);
-    try { await api.platform.setSubscription(t.id, { planKey }); reload(); }
-    catch (e) { alert(e.message); } finally { setBusy(null); }
-  }
+  const [detailFor, setDetailFor] = useState(null); // tenant id open in the drill-down
 
   if (loading) return <Muted>Loading…</Muted>;
   if (error) return <ErrorBox msg={error} />;
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 14 }}>
-        <button style={btnPrimary} onClick={() => setShowCreate(true)}>+ New tenant</button>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+        <div style={{ fontSize: 13, color: C.textSecondary }}>
+          Each admin is a workspace with its own login, organizations and users.
+        </div>
+        <button style={btnPrimary} onClick={() => setShowCreate(true)}>+ New admin</button>
       </div>
       {showCreate && (
-        <CreateTenant planKeys={planKeys} onClose={() => setShowCreate(false)} onCreated={() => { setShowCreate(false); reload(); }} />
+        <CreateAdmin plans={plans || []} onClose={() => setShowCreate(false)} onCreated={() => { setShowCreate(false); reload(); }} />
       )}
       <div style={{ ...card, padding: 0, overflow: 'hidden' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13.5 }}>
           <thead>
             <tr style={{ background: C.pageBg, textAlign: 'left', color: C.textSecondary }}>
-              {['Tenant', 'Slug', 'Status', 'Plan', 'Orgs', 'Users', ''].map(h => (
+              {['Admin', 'Slug', 'Status', 'Plan', 'Orgs', 'Users', ''].map(h => (
                 <th key={h} style={{ padding: '11px 14px', fontWeight: 600, fontSize: 12 }}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {(data || []).map(t => (
-              <tr key={t.id} style={{ borderTop: `1px solid ${C.border}` }}>
+              <tr key={t.id} style={{ borderTop: `1px solid ${C.border}`, cursor: 'pointer' }}
+                onClick={() => setDetailFor(t.id)}>
                 <td style={{ padding: '11px 14px', fontWeight: 600 }}>{t.name}</td>
                 <td style={{ padding: '11px 14px', color: C.textSecondary }}>{t.slug}</td>
                 <td style={{ padding: '11px 14px' }}><StatusPill status={t.status} /></td>
-                <td style={{ padding: '11px 14px' }}>
-                  <select value={t.plan_key || ''} disabled={busy === t.id}
-                    onChange={e => changePlan(t, e.target.value)}
-                    style={{ ...btn, padding: '5px 8px', fontSize: 12.5 }}>
-                    {!t.plan_key && <option value="">—</option>}
-                    {(plans || []).map(p => <option key={p.key} value={p.key}>{p.name}</option>)}
-                  </select>
-                </td>
+                <td style={{ padding: '11px 14px' }}>{t.plan_name || '—'}</td>
                 <td style={{ padding: '11px 14px' }}>{t.organizations}</td>
                 <td style={{ padding: '11px 14px' }}>{t.users}</td>
                 <td style={{ padding: '11px 14px', textAlign: 'right', whiteSpace: 'nowrap' }}>
-                  <button style={{ ...btn, padding: '5px 10px', fontSize: 12.5, marginRight: 6 }} disabled={busy === t.id}
-                    onClick={() => setUsersFor(t)}>
-                    Impersonate
-                  </button>
-                  <button style={{ ...btn, padding: '5px 10px', fontSize: 12.5 }} disabled={busy === t.id}
-                    onClick={() => toggleStatus(t)}>
-                    {t.status === 'suspended' ? 'Activate' : 'Suspend'}
+                  <button style={{ ...btn, padding: '5px 10px', fontSize: 12.5 }}
+                    onClick={(e) => { e.stopPropagation(); setDetailFor(t.id); }}>
+                    Manage →
                   </button>
                 </td>
               </tr>
             ))}
             {(data || []).length === 0 && (
-              <tr><td colSpan={7} style={{ padding: 20, textAlign: 'center', color: C.textMuted }}>No tenants yet.</td></tr>
+              <tr><td colSpan={7} style={{ padding: 20, textAlign: 'center', color: C.textMuted }}>No admins yet. Create one to get started.</td></tr>
             )}
           </tbody>
         </table>
       </div>
-      {usersFor && <ImpersonateModal tenant={usersFor} onClose={() => setUsersFor(null)} />}
+      {detailFor && (
+        <AdminDetail tenantId={detailFor} plans={plans || []} onClose={() => setDetailFor(null)} onChanged={reload} />
+      )}
     </div>
   );
 }
 
-function ImpersonateModal({ tenant, onClose }) {
-  const { data: users, error, loading } = useAsync(() => api.platform.tenantUsers(tenant.id), [tenant.id]);
-  const [busy, setBusy] = useState(false);
-
-  async function impersonate(u) {
-    const reason = window.prompt(`Reason for impersonating ${u.display_name || u.username}? (required, audited)`);
-    if (reason == null) return;
-    if (!reason.trim()) { alert('A reason is required.'); return; }
-    setBusy(true);
-    try {
-      await api.platform.impersonate(u.id, reason.trim());
-      // The session cookie is now the impersonated user — reload to enter it.
-      window.location.hash = '#/home';
-      window.location.reload();
-    } catch (e) { alert(e.message); setBusy(false); }
-  }
-
-  return (
-    <div onClick={onClose} style={{
-      position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', backdropFilter: 'blur(3px)',
-      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 500, padding: 20,
-    }}>
-      <div onClick={e => e.stopPropagation()} style={{
-        width: '100%', maxWidth: 520, maxHeight: '80vh', overflow: 'auto',
-        background: C.cardBg, border: `1px solid ${C.border}`, borderRadius: 18, boxShadow: C.shadowLg,
-        animation: 'scaleInFast 0.18s cubic-bezier(0.16,1,0.3,1) both',
-      }}>
-        <div style={{ padding: '18px 20px', borderBottom: `1px solid ${C.border}` }}>
-          <div style={{ fontSize: 16, fontWeight: 800 }}>Impersonate a user</div>
-          <div style={{ fontSize: 12.5, color: C.textSecondary, marginTop: 2 }}>{tenant.name} · time-limited & fully audited</div>
-        </div>
-        <div style={{ padding: 12 }}>
-          {loading ? <Muted>Loading users…</Muted> : error ? <ErrorBox msg={error} /> : (users || []).length === 0 ? (
-            <Muted>No users in this tenant.</Muted>
-          ) : (users || []).map(u => (
-            <div key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', borderRadius: 11 }}>
-              <span style={{ width: 34, height: 34, borderRadius: 9, background: `${C.primary}1f`, color: C.primary, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, flexShrink: 0 }}>
-                {(u.display_name || u.username || '?').charAt(0).toUpperCase()}
-              </span>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 13.5, fontWeight: 600 }}>{u.display_name || u.username}</div>
-                <div style={{ fontSize: 11.5, color: C.textMuted }}>{u.email} · {u.role}{u.is_active === false ? ' · disabled' : ''}</div>
-              </div>
-              <button style={{ ...btnPrimary, padding: '6px 12px', fontSize: 12.5 }} disabled={busy || u.is_active === false}
-                onClick={() => impersonate(u)}>
-                Impersonate
-              </button>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function CreateTenant({ planKeys, onClose, onCreated }) {
+function CreateAdmin({ plans, onClose, onCreated }) {
   const [name, setName] = useState('');
-  const [planKey, setPlanKey] = useState(planKeys[0] || 'starter');
+  const [adminEmail, setAdminEmail] = useState('');
+  const [adminName, setAdminName] = useState('');
+  const [adminPassword, setAdminPassword] = useState('');
+  const [planKey, setPlanKey] = useState(plans[0]?.key || 'starter');
+  const [billingCycle, setBillingCycle] = useState('monthly');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
+  const [created, setCreated] = useState(null); // { admin, generatedPassword }
 
   async function submit() {
-    if (!name.trim()) { setErr('Name is required'); return; }
+    if (!name.trim()) { setErr('Workspace name is required'); return; }
+    if (!adminEmail.trim()) { setErr('Admin email is required'); return; }
     setBusy(true); setErr(null);
-    try { await api.platform.createTenant({ name: name.trim(), planKey }); onCreated(); }
-    catch (e) { setErr(e.message); setBusy(false); }
+    try {
+      const r = await api.platform.createTenant({
+        name: name.trim(), planKey, billingCycle,
+        adminEmail: adminEmail.trim(), adminName: adminName.trim() || undefined,
+        adminPassword: adminPassword.trim() || undefined,
+      });
+      setCreated({ email: adminEmail.trim(), password: r.generatedPassword || adminPassword.trim() });
+    } catch (e) { setErr(e.message); setBusy(false); }
+  }
+
+  if (created) {
+    return (
+      <div style={{ ...card, marginBottom: 14, borderColor: C.green }}>
+        <div style={{ fontWeight: 700, marginBottom: 8, color: C.green }}>✓ Admin created</div>
+        <div style={{ fontSize: 13, color: C.textSecondary, marginBottom: 10 }}>
+          Hand these credentials to the admin. The password is shown once.
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 14, fontFamily: 'monospace', background: C.pageBg, padding: 12, borderRadius: 8 }}>
+          <div>Email: <b>{created.email}</b></div>
+          <div>Password: <b>{created.password}</b></div>
+        </div>
+        <div style={{ marginTop: 12, textAlign: 'right' }}>
+          <button style={btnPrimary} onClick={onCreated}>Done</button>
+        </div>
+      </div>
+    );
   }
 
   return (
     <div style={{ ...card, marginBottom: 14 }}>
-      <div style={{ fontWeight: 700, marginBottom: 12 }}>Create tenant</div>
+      <div style={{ fontWeight: 700, marginBottom: 12 }}>Create admin</div>
       {err && <ErrorBox msg={err} />}
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-        <input autoFocus placeholder="Company name" value={name} onChange={e => setName(e.target.value)}
-          style={{ flex: 1, minWidth: 200, padding: '9px 11px', borderRadius: 8, border: `1px solid ${C.border}`, fontFamily: FONT, fontSize: 14 }} />
-        <select value={planKey} onChange={e => setPlanKey(e.target.value)} style={{ ...btn }}>
-          {planKeys.map(k => <option key={k} value={k}>{k}</option>)}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 }}>
+        <input autoFocus placeholder="Workspace / company name" value={name} onChange={e => setName(e.target.value)} style={inputStyle} />
+        <input placeholder="Admin email (login)" value={adminEmail} onChange={e => setAdminEmail(e.target.value)} style={inputStyle} />
+        <input placeholder="Admin display name (optional)" value={adminName} onChange={e => setAdminName(e.target.value)} style={inputStyle} />
+        <input placeholder="Password (blank = auto-generate)" value={adminPassword} onChange={e => setAdminPassword(e.target.value)} style={inputStyle} />
+        <select value={planKey} onChange={e => setPlanKey(e.target.value)} style={inputStyle}>
+          {plans.map(p => <option key={p.key} value={p.key}>{p.name}</option>)}
         </select>
+        <select value={billingCycle} onChange={e => setBillingCycle(e.target.value)} style={inputStyle}>
+          <option value="monthly">Monthly</option>
+          <option value="yearly">Yearly</option>
+        </select>
+      </div>
+      <div style={{ marginTop: 12, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
         <button style={btn} onClick={onClose} disabled={busy}>Cancel</button>
-        <button style={btnPrimary} onClick={submit} disabled={busy}>{busy ? 'Creating…' : 'Create'}</button>
+        <button style={btnPrimary} onClick={submit} disabled={busy}>{busy ? 'Creating…' : 'Create admin'}</button>
       </div>
     </div>
   );
 }
 
+// ─── Admin drill-down: subscription, admin login, orgs → users ───────────────
+function AdminDetail({ tenantId, plans, onClose, onChanged }) {
+  const { data, error, loading, reload } = useAsync(() => api.platform.tenant(tenantId), [tenantId]);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState(null);
+  const [impUser, setImpUser] = useState(null);
+  const [editAdmin, setEditAdmin] = useState(false);
+
+  const refresh = () => { reload(); onChanged?.(); };
+
+  async function run(fn) {
+    setBusy(true); setNotice(null);
+    try { await fn(); refresh(); }
+    catch (e) { alert(e.message); }
+    finally { setBusy(false); }
+  }
+
+  async function renew() { await run(() => api.platform.renew(tenantId, 1)); }
+  async function changePlan(planKey) {
+    if (!planKey) return;
+    await run(() => api.platform.setSubscription(tenantId, { planKey }));
+  }
+  async function toggleStatus(status) {
+    const next = status === 'suspended' ? 'active' : 'suspended';
+    if (!window.confirm(`${next === 'suspended' ? 'Suspend' : 'Activate'} this admin workspace?`)) return;
+    await run(() => api.platform.updateTenant(tenantId, { status: next }));
+  }
+  async function resetPassword(userId, label) {
+    if (!window.confirm(`Reset password for ${label}? A new one-time password will be shown.`)) return;
+    setBusy(true);
+    try {
+      const r = await api.platform.resetUserPassword(userId);
+      setNotice(`New password for ${r.email}: ${r.password}`);
+    } catch (e) { alert(e.message); } finally { setBusy(false); }
+  }
+
+  const sub = data?.subscriptions?.find(s => ['active', 'trialing', 'past_due', 'suspended'].includes(s.status)) || data?.subscriptions?.[0];
+  const admin = data?.admin;
+  const users = data?.users || [];
+  const orgs = data?.organizations || [];
+  const tenantWideUsers = users.filter(u => u.organization_id == null && u.role !== 'admin');
+
+  return (
+    <Modal onClose={onClose} title={loading ? 'Loading…' : data?.name} subtitle={data ? `${data.slug} · workspace` : ''} wide>
+      {loading ? <Muted>Loading…</Muted> : error ? <ErrorBox msg={error} /> : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {notice && (
+            <div style={{ background: `${C.green}14`, border: `1px solid ${C.green}55`, borderRadius: 8, padding: '10px 12px', fontSize: 13, fontFamily: 'monospace' }}>
+              {notice}
+            </div>
+          )}
+
+          {/* Subscription */}
+          <Section title="Subscription">
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 18, alignItems: 'center' }}>
+              <Field label="Plan">
+                <select value={sub?.plan_key || ''} disabled={busy} onChange={e => changePlan(e.target.value)} style={{ ...inputStyle, padding: '6px 8px' }}>
+                  {plans.map(p => <option key={p.key} value={p.key}>{p.name}</option>)}
+                </select>
+              </Field>
+              <Field label="Status"><StatusPill status={sub?.status} /></Field>
+              <Field label="Renews / expires"><span style={{ fontWeight: 600 }}>{fmtDate(sub?.current_period_end)}</span></Field>
+              <div style={{ flex: 1 }} />
+              <button style={btn} disabled={busy} onClick={renew}>+ Renew 1 month</button>
+              <button style={btn} disabled={busy} onClick={() => toggleStatus(data.status)}>
+                {data.status === 'suspended' ? 'Activate workspace' : 'Suspend workspace'}
+              </button>
+            </div>
+          </Section>
+
+          {/* Admin login */}
+          <Section title="Admin login">
+            {admin ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                <UserAvatar name={admin.display_name || admin.username} />
+                <div style={{ flex: 1, minWidth: 160 }}>
+                  <div style={{ fontWeight: 600 }}>{admin.display_name || admin.username}</div>
+                  <div style={{ fontSize: 12, color: C.textMuted }}>{admin.email}{admin.is_active === false ? ' · disabled' : ''}</div>
+                </div>
+                <button style={btn} disabled={busy} onClick={() => setEditAdmin(true)}>Edit</button>
+                <button style={btn} disabled={busy} onClick={() => resetPassword(admin.id, admin.email)}>Reset password</button>
+                <button style={btnPrimary} disabled={busy || admin.is_active === false} onClick={() => setImpUser(admin)}>Impersonate</button>
+              </div>
+            ) : <Muted>No admin login found for this workspace.</Muted>}
+          </Section>
+
+          {/* Organizations → users */}
+          <Section title={`Organizations (${orgs.length})`}>
+            {orgs.length === 0 ? <Muted>No organizations yet.</Muted> : orgs.map(o => {
+              const members = users.filter(u => u.organization_id === o.id);
+              return (
+                <div key={o.id} style={{ border: `1px solid ${C.border}`, borderRadius: 10, padding: 12, marginBottom: 10 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: members.length ? 10 : 0 }}>
+                    <span style={{ fontWeight: 700 }}>{o.name}</span>
+                    <StatusPill status={o.status} />
+                    <span style={{ fontSize: 12, color: C.textMuted }}>{o.member_count} member{o.member_count === 1 ? '' : 's'}</span>
+                  </div>
+                  {members.map(u => <UserRow key={u.id} u={u} busy={busy} onImpersonate={() => setImpUser(u)} onReset={() => resetPassword(u.id, u.email)} />)}
+                </div>
+              );
+            })}
+            {tenantWideUsers.length > 0 && (
+              <div style={{ border: `1px dashed ${C.border}`, borderRadius: 10, padding: 12 }}>
+                <div style={{ fontWeight: 700, marginBottom: 10, fontSize: 13, color: C.textSecondary }}>Tenant-wide users</div>
+                {tenantWideUsers.map(u => <UserRow key={u.id} u={u} busy={busy} onImpersonate={() => setImpUser(u)} onReset={() => resetPassword(u.id, u.email)} />)}
+              </div>
+            )}
+          </Section>
+        </div>
+      )}
+
+      {editAdmin && admin && (
+        <EditUserModal user={admin} onClose={() => setEditAdmin(false)} onSaved={() => { setEditAdmin(false); refresh(); }} />
+      )}
+      {impUser && <ImpersonateConfirm user={impUser} onClose={() => setImpUser(null)} />}
+    </Modal>
+  );
+}
+
+function UserRow({ u, busy, onImpersonate, onReset }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 0' }}>
+      <UserAvatar name={u.display_name || u.username} small />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 13, fontWeight: 600 }}>{u.display_name || u.username}</div>
+        <div style={{ fontSize: 11.5, color: C.textMuted }}>{u.email} · {u.role}{u.is_active === false ? ' · disabled' : ''}</div>
+      </div>
+      <button style={{ ...btn, padding: '4px 9px', fontSize: 12 }} disabled={busy} onClick={onReset}>Reset pw</button>
+      <button style={{ ...btnPrimary, padding: '4px 10px', fontSize: 12 }} disabled={busy || u.is_active === false} onClick={onImpersonate}>Impersonate</button>
+    </div>
+  );
+}
+
+function EditUserModal({ user, onClose, onSaved }) {
+  const [displayName, setDisplayName] = useState(user.display_name || '');
+  const [email, setEmail] = useState(user.email || '');
+  const [isActive, setIsActive] = useState(user.is_active !== false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+
+  async function save() {
+    setBusy(true); setErr(null);
+    try {
+      await api.platform.updateUser(user.id, { displayName: displayName.trim(), email: email.trim(), isActive });
+      onSaved();
+    } catch (e) { setErr(e.message); setBusy(false); }
+  }
+
+  return (
+    <Modal onClose={onClose} title="Edit admin">
+      {err && <ErrorBox msg={err} />}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <Field label="Display name" block><input value={displayName} onChange={e => setDisplayName(e.target.value)} style={{ ...inputStyle, width: '100%' }} /></Field>
+        <Field label="Email (login)" block><input value={email} onChange={e => setEmail(e.target.value)} style={{ ...inputStyle, width: '100%' }} /></Field>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+          <input type="checkbox" checked={isActive} onChange={e => setIsActive(e.target.checked)} /> Active (can log in)
+        </label>
+      </div>
+      <div style={{ marginTop: 16, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+        <button style={btn} onClick={onClose} disabled={busy}>Cancel</button>
+        <button style={btnPrimary} onClick={save} disabled={busy}>{busy ? 'Saving…' : 'Save'}</button>
+      </div>
+    </Modal>
+  );
+}
+
+function ImpersonateConfirm({ user, onClose }) {
+  const [busy, setBusy] = useState(false);
+  async function go() {
+    const reason = window.prompt(`Reason for impersonating ${user.display_name || user.email}? (required, audited)`);
+    if (reason == null) return;
+    if (!reason.trim()) { alert('A reason is required.'); return; }
+    setBusy(true);
+    try {
+      await api.platform.impersonate(user.id, reason.trim());
+      window.location.hash = '#/home';
+      window.location.reload();
+    } catch (e) { alert(e.message); setBusy(false); }
+  }
+  useEffect(() => { go(); /* eslint-disable-next-line */ }, []);
+  return (
+    <Modal onClose={busy ? undefined : onClose} title="Impersonate">
+      <Muted>{busy ? 'Starting impersonation…' : 'Awaiting confirmation…'}</Muted>
+    </Modal>
+  );
+}
+
+// ─── Plans ───────────────────────────────────────────────────────────────────
 function Plans() {
   const { data, error, loading } = useAsync(() => api.platform.plans(), []);
   if (loading) return <Muted>Loading…</Muted>;
@@ -300,6 +503,7 @@ function Plans() {
   );
 }
 
+// ─── Audit ───────────────────────────────────────────────────────────────────
 function Audit() {
   const { data, error, loading } = useAsync(() => api.platform.audit(150), []);
   if (loading) return <Muted>Loading…</Muted>;
@@ -333,6 +537,54 @@ function Audit() {
   );
 }
 
+// ─── Shared bits ─────────────────────────────────────────────────────────────
+function Modal({ title, subtitle, children, onClose, wide }) {
+  return (
+    <div onClick={onClose} style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', backdropFilter: 'blur(3px)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 500, padding: 20,
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        width: '100%', maxWidth: wide ? 760 : 480, maxHeight: '86vh', overflow: 'auto',
+        background: C.cardBg, border: `1px solid ${C.border}`, borderRadius: 18, boxShadow: C.shadowLg,
+        animation: 'scaleInFast 0.18s cubic-bezier(0.16,1,0.3,1) both',
+      }}>
+        <div style={{ padding: '18px 22px', borderBottom: `1px solid ${C.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+          <div>
+            <div style={{ fontSize: 17, fontWeight: 800 }}>{title}</div>
+            {subtitle ? <div style={{ fontSize: 12.5, color: C.textSecondary, marginTop: 2 }}>{subtitle}</div> : null}
+          </div>
+          {onClose && <button onClick={onClose} style={{ ...btn, padding: '4px 10px' }}>✕</button>}
+        </div>
+        <div style={{ padding: 20 }}>{children}</div>
+      </div>
+    </div>
+  );
+}
+function Section({ title, children }) {
+  return (
+    <div style={card}>
+      <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 12, textTransform: 'uppercase', letterSpacing: '0.05em', color: C.textSecondary }}>{title}</div>
+      {children}
+    </div>
+  );
+}
+function Field({ label, children, block }) {
+  return (
+    <div style={{ display: block ? 'block' : 'flex', flexDirection: 'column', gap: 4 }}>
+      <div style={{ fontSize: 11, color: C.textMuted, fontWeight: 600, marginBottom: 4 }}>{label}</div>
+      {children}
+    </div>
+  );
+}
+function UserAvatar({ name, small }) {
+  const s = small ? 28 : 36;
+  return (
+    <span style={{ width: s, height: s, borderRadius: 9, background: `${C.primary}1f`, color: C.primary, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, flexShrink: 0, fontSize: small ? 12 : 14 }}>
+      {(name || '?').charAt(0).toUpperCase()}
+    </span>
+  );
+}
 function Muted({ children }) {
   return <div style={{ color: C.textMuted, fontSize: 14, padding: 20 }}>{children}</div>;
 }

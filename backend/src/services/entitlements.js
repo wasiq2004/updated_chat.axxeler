@@ -10,12 +10,27 @@
 
 const db = require('./../db');
 
-// Returns { planId, planKey, status, featureOverrides, limitOverrides } or null.
+// Grace window (days) a tenant keeps features after the plan's period end before
+// they hard-lock. Configurable via PLAN_GRACE_DAYS (0 = lock immediately).
+const GRACE_DAYS = (() => {
+  const n = parseInt(process.env.PLAN_GRACE_DAYS ?? '3', 10);
+  return Number.isFinite(n) && n >= 0 ? n : 3;
+})();
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Returns the tenant's entitlement with billing-period awareness, or null when
+// there is no live subscription at all. The returned object includes:
+//   periodEnd   : Date|null  (null = no expiry, e.g. the bootstrap Enterprise tenant)
+//   expired     : period end is in the past
+//   inGrace     : expired but still inside the grace window (features stay on)
+//   locked      : grace exhausted → features must be denied
+//   graceEndsAt : Date|null
+//   daysLeft    : whole days until lock (negative once locked); null if no expiry
 async function getTenantEntitlement(tenantId) {
   if (!tenantId) return null;
   const { rows } = await db.query(
     `SELECT s.plan_id, p.key AS plan_key, s.status,
-            s.feature_overrides, s.limit_overrides,
+            s.feature_overrides, s.limit_overrides, s.current_period_end,
             p.max_users, p.max_organizations, p.max_contacts
        FROM coexistence.subscriptions s
        JOIN coexistence.plans p ON p.id = s.plan_id
@@ -26,6 +41,15 @@ async function getTenantEntitlement(tenantId) {
   );
   const r = rows[0];
   if (!r) return null;
+
+  const now = Date.now();
+  const periodEnd = r.current_period_end ? new Date(r.current_period_end) : null;
+  const expired = periodEnd != null && now > periodEnd.getTime();
+  const graceEndsAt = periodEnd ? new Date(periodEnd.getTime() + GRACE_DAYS * DAY_MS) : null;
+  const locked = graceEndsAt != null && now > graceEndsAt.getTime();
+  const inGrace = expired && !locked;
+  const daysLeft = graceEndsAt ? Math.ceil((graceEndsAt.getTime() - now) / DAY_MS) : null;
+
   return {
     planId: r.plan_id,
     planKey: r.plan_key,
@@ -37,6 +61,12 @@ async function getTenantEntitlement(tenantId) {
       max_organizations: r.max_organizations,
       max_contacts: r.max_contacts,
     },
+    periodEnd,
+    graceEndsAt,
+    expired,
+    inGrace,
+    locked,
+    daysLeft,
   };
 }
 
@@ -44,6 +74,7 @@ async function getTenantEntitlement(tenantId) {
 async function tenantHasFeature(tenantId, featureKey) {
   const ent = await getTenantEntitlement(tenantId);
   if (!ent) return false;
+  if (ent.locked) return false; // expired past the grace window → everything off
   if (Object.prototype.hasOwnProperty.call(ent.featureOverrides, featureKey)) {
     return ent.featureOverrides[featureKey] === true;
   }
@@ -63,6 +94,7 @@ async function tenantHasFeature(tenantId, featureKey) {
 async function getLimit(tenantId, kind) {
   const ent = await getTenantEntitlement(tenantId);
   if (!ent) return 0; // no active plan → nothing allowed
+  if (ent.locked) return 0; // expired past grace → cannot add more of anything
   if (Object.prototype.hasOwnProperty.call(ent.limitOverrides, kind)) {
     const v = ent.limitOverrides[kind];
     return v == null ? null : Number(v);
@@ -97,6 +129,7 @@ async function checkLimit(tenantId, kind) {
 async function getTenantFeatures(tenantId) {
   const ent = await getTenantEntitlement(tenantId);
   if (!ent) return [];
+  if (ent.locked) return []; // expired past grace → no features
   const { rows } = await db.query(
     `SELECT f.key FROM coexistence.plan_features pf
        JOIN coexistence.features f ON f.id = pf.feature_id

@@ -25,6 +25,7 @@ import OrganizationsPage from './pages/OrganizationsPage.jsx';
 import BrandingPage from './pages/BrandingPage.jsx';
 import AuditPage from './pages/AuditPage.jsx';
 import UpgradeGate from './components/UpgradeGate.jsx';
+import RenewGate from './components/RenewGate.jsx';
 import { canAccessPage } from './lib/plans.js';
 
 const VALID_PAGES = new Set([
@@ -195,6 +196,13 @@ export default function App() {
   }
 
   const renderPage = () => {
+    // Subscription expired past its grace window → hard-lock the app behind a
+    // renew prompt. Billing stays reachable so they can review their plan. The
+    // backend also denies features when locked (entitlements.js), so this is the
+    // matching UX, not the enforcement.
+    if (entitlements?.subscription?.locked === true && page !== 'billing') {
+      return <RenewGate onViewBilling={() => setPage('billing')} />;
+    }
     // Plan feature gate: premium pages render the upgrade screen when the
     // tenant's plan doesn't include the feature (backend also enforces it).
     if (!canAccessPage(entitlements, page)) {
@@ -240,6 +248,20 @@ export default function App() {
             background: '#fff', color: '#B45309', border: 'none', borderRadius: 6,
             padding: '4px 12px', fontWeight: 700, fontSize: 12.5, cursor: 'pointer', fontFamily: FONT,
           }}>Stop impersonating</button>
+        </div>
+      )}
+      {entitlements?.subscription?.inGrace === true && (
+        <div style={{
+          background: '#B45309', color: '#fff', fontFamily: FONT, fontSize: 13, fontWeight: 600,
+          padding: '8px 16px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 14,
+        }}>
+          <span>
+            ⚠ Your plan has expired — features stay on for {Math.max(0, entitlements.subscription.daysLeft ?? 0)} more day(s). Renew to avoid interruption.
+          </span>
+          <button onClick={() => setPage('billing')} style={{
+            background: '#fff', color: '#B45309', border: 'none', borderRadius: 6,
+            padding: '4px 12px', fontWeight: 700, fontSize: 12.5, cursor: 'pointer', fontFamily: FONT,
+          }}>View billing</button>
         </div>
       )}
       {user.isSuperAdmin && !user.impersonation && page !== 'super-admin' && (

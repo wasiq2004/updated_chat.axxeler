@@ -66,6 +66,17 @@ router.get('/billing/entitlements', async (req, res) => {
       },
       plan: ent ? { key: ent.planKey } : null,
       status: ent?.status || null,
+      // Billing-period state drives the grace-warning banner and the locked
+      // "renew" screen on the frontend.
+      subscription: ent ? {
+        status: ent.status,
+        periodEnd: ent.periodEnd,
+        graceEndsAt: ent.graceEndsAt,
+        expired: ent.expired,
+        inGrace: ent.inGrace,
+        locked: ent.locked,
+        daysLeft: ent.daysLeft,
+      } : { status: null, locked: false, inGrace: false, expired: false },
       features,
       limits: {
         users: { used: users.used, max: users.max },

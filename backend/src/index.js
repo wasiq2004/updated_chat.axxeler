@@ -250,6 +250,22 @@ async function start() {
   startSendWorker();
   startAgentWorker();
 
+  // Subscription expiry: keep billing status in sync (active→past_due at period
+  // end, →suspended once the grace window is exhausted). Feature locking itself
+  // is date-driven in entitlements.js; this only updates the stored status for
+  // the Super Admin console. Sweep on boot, then hourly.
+  const { sweepExpiredSubscriptions } = require('./services/subscriptionSweeper');
+  const runSubscriptionSweep = () =>
+    sweepExpiredSubscriptions(pool)
+      .then(({ pastDue, suspended }) => {
+        if (pastDue || suspended) {
+          console.log(`[subscriptions] sweep: ${pastDue} past_due, ${suspended} suspended`);
+        }
+      })
+      .catch(err => console.error('[subscriptions] sweep error:', err.message));
+  runSubscriptionSweep();
+  setInterval(runSubscriptionSweep, 60 * 60 * 1000).unref();
+
   // Self-healing delivery/read ticks: re-derive each outbound message's true
   // status from the stored webhook receipts and upgrade any chat_history row
   // that's behind (monotonic). On boot we sweep a wider 7-day window to backfill

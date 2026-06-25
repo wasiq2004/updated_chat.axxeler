@@ -98,6 +98,27 @@ export default function BillingPage({ entitlements: initial }) {
         </div>
       )}
 
+      {/* Subscription period / expiry state */}
+      {!ent.isSuperAdmin && ent.subscription && (ent.subscription.expired || ent.subscription.periodEnd) && (() => {
+        const s = ent.subscription;
+        const accent = s.locked ? '#DC2626' : s.inGrace ? C.amber : C.green;
+        const msg = s.locked
+          ? 'Your subscription has expired and features are locked. Contact your account manager to renew.'
+          : s.inGrace
+            ? `Your plan expired and is in a grace period — features stay on for about ${Math.max(0, s.daysLeft ?? 0)} more day(s). Renew to avoid interruption.`
+            : `Your plan renews on ${new Date(s.periodEnd).toLocaleDateString()}.`;
+        return (
+          <div style={{ ...bannerStyle(accent), marginBottom: 22 }}>
+            <div>
+              <div style={{ fontSize: 12.5, color: accent, fontWeight: 700, marginBottom: 2 }}>
+                {s.locked ? 'Subscription expired' : s.inGrace ? 'Renewal due' : 'Billing'}
+              </div>
+              <div style={{ fontSize: 14, fontWeight: 600, color: C.text }}>{msg}</div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Usage meters */}
       {!ent.isSuperAdmin && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14, marginBottom: 36 }}>
