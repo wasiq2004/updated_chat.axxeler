@@ -72,8 +72,9 @@ services:
       - "traefik.http.routers.zchat.rule=Host(`chat.axxeler.in`)"
       - "traefik.http.routers.zchat.entrypoints=websecure"
       - "traefik.http.routers.zchat.tls=true"
-      - "traefik.http.routers.zchat.tls.certresolver=mytlschallenge"
+      - "traefik.http.routers.zchat.tls.certresolver=letsencrypt"
       - "traefik.http.services.zchat.loadbalancer.server.port=80"
+      - "traefik.docker.network=dokploy-network"
 
   tunnel:
     image: cloudflare/cloudflared:latest
@@ -97,6 +98,6 @@ networks:
     # Private network for inter-service communication only
     driver: bridge
   traefik:
-    # Join the existing network where Traefik lives
+    # Join the existing network where Dokploy's Traefik lives.
     external: true
-    name: n8n_default   # ← verify this name (see step below)
+    name: dokploy-network
