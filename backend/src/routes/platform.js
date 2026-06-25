@@ -127,13 +127,25 @@ router.get('/platform/tenants', async (_req, res) => {
 router.get('/platform/tenants/:id', async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT t.*, p.key AS plan_key, p.name AS plan_name
+      `SELECT t.*, p.key AS plan_key, p.name AS plan_name,
+              p.max_users, p.max_organizations, p.max_contacts
          FROM coexistence.tenants t
          LEFT JOIN coexistence.plans p ON p.id = t.plan_id
         WHERE t.id = $1 AND t.deleted_at IS NULL`,
       [req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Tenant not found' });
+    // Real usage for this admin (workspace), to compare against plan limits.
+    const { rows: usageRows } = await pool.query(
+      `SELECT
+         (SELECT COUNT(*)::int FROM coexistence.z_chat_users WHERE tenant_id = $1)                               AS users,
+         (SELECT COUNT(*)::int FROM coexistence.organizations WHERE tenant_id = $1 AND deleted_at IS NULL)       AS organizations,
+         (SELECT COUNT(*)::int FROM coexistence.contacts WHERE tenant_id = $1)                                   AS contacts,
+         (SELECT COUNT(*)::int FROM coexistence.chat_history WHERE tenant_id = $1)                               AS messages,
+         (SELECT MAX(last_login_at) FROM coexistence.z_chat_users WHERE tenant_id = $1)                          AS last_login`,
+      [req.params.id]
+    );
+    const usage = usageRows[0] || {};
     const { rows: orgs } = await pool.query(
       `SELECT o.id, o.name, o.slug, o.status, o.created_at,
               (SELECT COUNT(DISTINCT ur.user_id)::int
@@ -163,7 +175,21 @@ router.get('/platform/tenants/:id', async (req, res) => {
       [req.params.id]
     );
     const admin = users.find(u => u.role === 'admin') || null;
-    res.json({ ...rows[0], organizations: orgs, users, subscriptions: subs, admin });
+    res.json({
+      ...rows[0], organizations: orgs, users, subscriptions: subs, admin,
+      usage: {
+        users: usage.users ?? 0,
+        organizations: usage.organizations ?? 0,
+        contacts: usage.contacts ?? 0,
+        messages: usage.messages ?? 0,
+        lastLogin: usage.last_login ?? null,
+        limits: {
+          max_users: rows[0].max_users,
+          max_organizations: rows[0].max_organizations,
+          max_contacts: rows[0].max_contacts,
+        },
+      },
+    });
   } catch (err) {
     console.error('[platform] get tenant error:', err.message);
     res.status(500).json({ error: 'Failed to load tenant' });
@@ -490,6 +516,116 @@ router.get('/platform/plans', async (_req, res) => {
   } catch (err) {
     console.error('[platform] plans error:', err.message);
     res.status(500).json({ error: 'Failed to load plans' });
+  }
+});
+
+// Update a plan's pricing, limits, and metadata. Limits accept null = unlimited.
+router.patch('/platform/plans/:id', async (req, res) => {
+  const b = req.body || {};
+  const NUM = (v) => (v === '' || v == null ? null : Number(v));
+  const map = {
+    name: b.name != null ? String(b.name).trim() : undefined,
+    description: b.description != null ? String(b.description) : undefined,
+    price_monthly: b.priceMonthly != null ? Number(b.priceMonthly) : undefined,
+    price_yearly: b.priceYearly != null ? Number(b.priceYearly) : undefined,
+    currency: b.currency != null ? String(b.currency).trim().slice(0, 8) : undefined,
+    max_users: b.maxUsers !== undefined ? NUM(b.maxUsers) : undefined,
+    max_organizations: b.maxOrganizations !== undefined ? NUM(b.maxOrganizations) : undefined,
+    max_contacts: b.maxContacts !== undefined ? NUM(b.maxContacts) : undefined,
+    is_active: b.isActive != null ? !!b.isActive : undefined,
+    position: b.position != null ? parseInt(b.position, 10) : undefined,
+  };
+  try {
+    const fields = [];
+    const params = [];
+    let i = 1;
+    for (const [col, val] of Object.entries(map)) {
+      if (val === undefined) continue;
+      if (typeof val === 'number' && Number.isNaN(val)) return res.status(400).json({ error: `Invalid number for ${col}` });
+      fields.push(`${col} = $${i++}`); params.push(val);
+    }
+    if (!fields.length) return res.status(400).json({ error: 'Nothing to update' });
+    fields.push('updated_at = NOW()');
+    params.push(req.params.id);
+    const { rows } = await pool.query(
+      `UPDATE coexistence.plans SET ${fields.join(', ')} WHERE id = $${i} RETURNING *`, params
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Plan not found' });
+    await auditLog({
+      actor: req.user, action: 'platform.plan.update',
+      targetType: 'plan', targetId: req.params.id, payload: { ...map, ip: clientIp(req) },
+    });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('[platform] update plan error:', err.message);
+    res.status(500).json({ error: 'Failed to update plan' });
+  }
+});
+
+// Create a new plan (key must be unique).
+router.post('/platform/plans', async (req, res) => {
+  const b = req.body || {};
+  const key = slugify(b.key || b.name);
+  if (!key) return res.status(400).json({ error: 'key or name is required' });
+  if (!b.name?.trim()) return res.status(400).json({ error: 'name is required' });
+  try {
+    const dupe = await pool.query('SELECT 1 FROM coexistence.plans WHERE key = $1', [key]);
+    if (dupe.rows.length) return res.status(409).json({ error: `A plan with key '${key}' already exists` });
+    const NUM = (v) => (v === '' || v == null ? null : Number(v));
+    const { rows } = await pool.query(
+      `INSERT INTO coexistence.plans
+         (key, name, description, price_monthly, price_yearly, currency,
+          max_users, max_organizations, max_contacts, is_active, position)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+      [
+        key, b.name.trim(), b.description || null,
+        Number(b.priceMonthly) || 0, Number(b.priceYearly) || 0, (b.currency || 'USD').slice(0, 8),
+        NUM(b.maxUsers), NUM(b.maxOrganizations), NUM(b.maxContacts),
+        b.isActive != null ? !!b.isActive : true, parseInt(b.position, 10) || 0,
+      ]
+    );
+    await auditLog({
+      actor: req.user, action: 'platform.plan.create',
+      targetType: 'plan', targetId: rows[0].id, payload: { key, name: b.name, ip: clientIp(req) },
+    });
+    res.status(201).json(rows[0]);
+  } catch (err) {
+    console.error('[platform] create plan error:', err.message);
+    res.status(500).json({ error: 'Failed to create plan' });
+  }
+});
+
+// Replace a plan's feature set. Body: { features: ["inbox","ai_agents",...] }.
+router.put('/platform/plans/:id/features', async (req, res) => {
+  const keys = Array.isArray(req.body?.features) ? req.body.features.map(String) : null;
+  if (!keys) return res.status(400).json({ error: 'features array is required' });
+  const client = await pool.connect();
+  try {
+    const planRes = await client.query('SELECT 1 FROM coexistence.plans WHERE id = $1', [req.params.id]);
+    if (!planRes.rows.length) return res.status(404).json({ error: 'Plan not found' });
+
+    await client.query('BEGIN');
+    await client.query('DELETE FROM coexistence.plan_features WHERE plan_id = $1', [req.params.id]);
+    if (keys.length) {
+      await client.query(
+        `INSERT INTO coexistence.plan_features (plan_id, feature_id)
+           SELECT $1, f.id FROM coexistence.features f WHERE f.key = ANY($2::text[])
+         ON CONFLICT DO NOTHING`,
+        [req.params.id, keys]
+      );
+    }
+    await client.query('COMMIT');
+    await auditLog({
+      actor: req.user, action: 'platform.plan.features',
+      targetType: 'plan', targetId: req.params.id, payload: { features: keys, ip: clientIp(req) },
+    });
+    res.json({ ok: true, features: keys });
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch { /* ignore */ }
+    console.error('[platform] set plan features error:', err.message);
+    res.status(500).json({ error: 'Failed to update plan features' });
+  } finally {
+    client.release();
   }
 });
 

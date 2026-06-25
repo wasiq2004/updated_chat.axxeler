@@ -356,6 +356,21 @@ function AdminDetail({ tenantId, plans, onClose, onChanged }) {
             </div>
           </Section>
 
+          {/* Usage */}
+          {data.usage && (
+            <Section title="Usage">
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
+                <UsageStat label="Users" used={data.usage.users} max={data.usage.limits?.max_users} />
+                <UsageStat label="Organizations" used={data.usage.organizations} max={data.usage.limits?.max_organizations} />
+                <UsageStat label="Contacts" used={data.usage.contacts} max={data.usage.limits?.max_contacts} />
+                <UsageStat label="Messages" used={data.usage.messages} />
+              </div>
+              <div style={{ marginTop: 10, fontSize: 12, color: C.textMuted }}>
+                Last login: {data.usage.lastLogin ? new Date(data.usage.lastLogin).toLocaleString() : 'never'}
+              </div>
+            </Section>
+          )}
+
           {/* Admin login */}
           <Section title="Admin login">
             {admin ? (
@@ -473,33 +488,137 @@ function ImpersonateConfirm({ user, onClose }) {
   );
 }
 
-// ─── Plans ───────────────────────────────────────────────────────────────────
+// ─── Plans & pricing (editable) ──────────────────────────────────────────────
 function Plans() {
-  const { data, error, loading } = useAsync(() => api.platform.plans(), []);
+  const { data, error, loading, reload } = useAsync(() => api.platform.plans(), []);
+  const { data: allFeatures } = useAsync(() => api.platform.features(), []);
+  const [editing, setEditing] = useState(null); // plan object or {} for new
   if (loading) return <Muted>Loading…</Muted>;
   if (error) return <ErrorBox msg={error} />;
+
+  const fmt = (v) => (v == null ? '∞' : Number(v).toLocaleString());
+
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
-      {(data || []).map(p => (
-        <div key={p.key} style={card}>
-          <div style={{ fontSize: 16, fontWeight: 800 }}>{p.name}</div>
-          <div style={{ fontSize: 22, fontWeight: 800, margin: '6px 0' }}>
-            {Number(p.price_monthly) === 0 ? 'Custom' : `$${p.price_monthly}`}<span style={{ fontSize: 12, color: C.textMuted, fontWeight: 600 }}>/mo</span>
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+        <div style={{ fontSize: 13, color: C.textSecondary }}>Set pricing, limits and which features each plan unlocks.</div>
+        <button style={btnPrimary} onClick={() => setEditing({})}>+ New plan</button>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 14 }}>
+        {(data || []).map(p => (
+          <div key={p.key} style={{ ...card, opacity: p.is_active ? 1 : 0.6 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+              <div style={{ fontSize: 16, fontWeight: 800 }}>{p.name}</div>
+              {!p.is_active && <span style={{ fontSize: 10.5, fontWeight: 700, color: C.textMuted, background: C.pageBg, padding: '2px 7px', borderRadius: 6 }}>Hidden</span>}
+            </div>
+            <div style={{ fontSize: 22, fontWeight: 800, margin: '6px 0' }}>
+              {Number(p.price_monthly) === 0 ? 'Custom' : `$${p.price_monthly}`}<span style={{ fontSize: 12, color: C.textMuted, fontWeight: 600 }}>/mo</span>
+            </div>
+            <div style={{ fontSize: 12.5, color: C.textSecondary, marginBottom: 10, minHeight: 32 }}>{p.description}</div>
+            <div style={{ fontSize: 12, color: C.textSecondary, lineHeight: 1.8 }}>
+              <div>Users: {fmt(p.max_users)}</div>
+              <div>Orgs: {fmt(p.max_organizations)}</div>
+              <div>Contacts: {fmt(p.max_contacts)}</div>
+            </div>
+            <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+              {(p.features || []).map(f => (
+                <span key={f} style={{ fontSize: 10.5, fontWeight: 600, color: C.primary, background: `${C.primary}14`, padding: '2px 7px', borderRadius: 6 }}>{f}</span>
+              ))}
+            </div>
+            <div style={{ marginTop: 14 }}>
+              <button style={{ ...btn, width: '100%' }} onClick={() => setEditing(p)}>Edit</button>
+            </div>
           </div>
-          <div style={{ fontSize: 12.5, color: C.textSecondary, marginBottom: 10 }}>{p.description}</div>
-          <div style={{ fontSize: 12, color: C.textSecondary, lineHeight: 1.8 }}>
-            <div>Users: {p.max_users ?? '∞'}</div>
-            <div>Orgs: {p.max_organizations ?? '∞'}</div>
-            <div>Contacts: {p.max_contacts ?? '∞'}</div>
-          </div>
-          <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 5 }}>
-            {(p.features || []).map(f => (
-              <span key={f} style={{ fontSize: 10.5, fontWeight: 600, color: C.primary, background: `${C.primary}14`, padding: '2px 7px', borderRadius: 6 }}>{f}</span>
-            ))}
-          </div>
-        </div>
-      ))}
+        ))}
+      </div>
+      {editing && (
+        <PlanEditor plan={editing} allFeatures={allFeatures || []}
+          onClose={() => setEditing(null)} onSaved={() => { setEditing(null); reload(); }} />
+      )}
     </div>
+  );
+}
+
+function PlanEditor({ plan, allFeatures, onClose, onSaved }) {
+  const isNew = !plan.id;
+  const [f, setF] = useState({
+    name: plan.name || '', key: plan.key || '', description: plan.description || '',
+    priceMonthly: plan.price_monthly ?? 0, priceYearly: plan.price_yearly ?? 0,
+    maxUsers: plan.max_users ?? '', maxOrganizations: plan.max_organizations ?? '', maxContacts: plan.max_contacts ?? '',
+    isActive: plan.is_active !== false,
+  });
+  const [features, setFeatures] = useState(new Set(plan.features || []));
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+
+  const upd = (k, v) => setF(s => ({ ...s, [k]: v }));
+  const toggleFeature = (key) => setFeatures(s => { const n = new Set(s); n.has(key) ? n.delete(key) : n.add(key); return n; });
+
+  async function save() {
+    if (!f.name.trim()) { setErr('Name is required'); return; }
+    setBusy(true); setErr(null);
+    try {
+      const payload = {
+        name: f.name.trim(), description: f.description,
+        priceMonthly: f.priceMonthly, priceYearly: f.priceYearly,
+        maxUsers: f.maxUsers === '' ? null : f.maxUsers,
+        maxOrganizations: f.maxOrganizations === '' ? null : f.maxOrganizations,
+        maxContacts: f.maxContacts === '' ? null : f.maxContacts,
+        isActive: f.isActive,
+      };
+      const saved = isNew
+        ? await api.platform.createPlan({ ...payload, key: f.key.trim() || undefined })
+        : await api.platform.updatePlan(plan.id, payload);
+      await api.platform.setPlanFeatures(saved.id, [...features]);
+      onSaved();
+    } catch (e) { setErr(e.message); setBusy(false); }
+  }
+
+  return (
+    <Modal onClose={onClose} title={isNew ? 'New plan' : `Edit ${plan.name}`} wide>
+      {err && <ErrorBox msg={err} />}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
+        <Field label="Name" block><input value={f.name} onChange={e => upd('name', e.target.value)} style={{ ...inputStyle, width: '100%' }} /></Field>
+        <Field label={isNew ? 'Key (slug, optional)' : 'Key'} block>
+          <input value={f.key} disabled={!isNew} onChange={e => upd('key', e.target.value)} style={{ ...inputStyle, width: '100%', opacity: isNew ? 1 : 0.6 }} placeholder="auto from name" />
+        </Field>
+        <Field label="Price / month ($)" block><input type="number" min="0" value={f.priceMonthly} onChange={e => upd('priceMonthly', e.target.value)} style={{ ...inputStyle, width: '100%' }} /></Field>
+        <Field label="Price / year ($)" block><input type="number" min="0" value={f.priceYearly} onChange={e => upd('priceYearly', e.target.value)} style={{ ...inputStyle, width: '100%' }} /></Field>
+        <Field label="Max users (blank = ∞)" block><input type="number" min="0" value={f.maxUsers} onChange={e => upd('maxUsers', e.target.value)} style={{ ...inputStyle, width: '100%' }} /></Field>
+        <Field label="Max organizations (blank = ∞)" block><input type="number" min="0" value={f.maxOrganizations} onChange={e => upd('maxOrganizations', e.target.value)} style={{ ...inputStyle, width: '100%' }} /></Field>
+        <Field label="Max contacts (blank = ∞)" block><input type="number" min="0" value={f.maxContacts} onChange={e => upd('maxContacts', e.target.value)} style={{ ...inputStyle, width: '100%' }} /></Field>
+        <div style={{ display: 'flex', alignItems: 'flex-end' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+            <input type="checkbox" checked={f.isActive} onChange={e => upd('isActive', e.target.checked)} /> Active (offered to admins)
+          </label>
+        </div>
+      </div>
+      <Field label="Description" block>
+        <textarea value={f.description} onChange={e => upd('description', e.target.value)} rows={2} style={{ ...inputStyle, width: '100%', resize: 'vertical' }} />
+      </Field>
+      <div style={{ marginTop: 14 }}>
+        <div style={{ fontSize: 11, color: C.textMuted, fontWeight: 600, marginBottom: 8 }}>FEATURES UNLOCKED BY THIS PLAN</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8 }}>
+          {allFeatures.map(ft => {
+            const on = features.has(ft.key);
+            return (
+              <label key={ft.key} style={{
+                display: 'flex', alignItems: 'center', gap: 8, padding: '8px 11px', borderRadius: 9, cursor: 'pointer',
+                fontSize: 13, fontWeight: 600, border: `1px solid ${on ? C.primary : C.border}`,
+                background: on ? `${C.primary}10` : C.cardBg,
+              }}>
+                <input type="checkbox" checked={on} onChange={() => toggleFeature(ft.key)} />
+                <span>{ft.name || ft.key}</span>
+              </label>
+            );
+          })}
+        </div>
+      </div>
+      <div style={{ marginTop: 18, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+        <button style={btn} onClick={onClose} disabled={busy}>Cancel</button>
+        <button style={btnPrimary} onClick={save} disabled={busy}>{busy ? 'Saving…' : isNew ? 'Create plan' : 'Save plan'}</button>
+      </div>
+    </Modal>
   );
 }
 
@@ -574,6 +693,25 @@ function Field({ label, children, block }) {
     <div style={{ display: block ? 'block' : 'flex', flexDirection: 'column', gap: 4 }}>
       <div style={{ fontSize: 11, color: C.textMuted, fontWeight: 600, marginBottom: 4 }}>{label}</div>
       {children}
+    </div>
+  );
+}
+function UsageStat({ label, used, max }) {
+  const unlimited = max == null;
+  const pct = unlimited || !max ? 0 : Math.min(100, Math.round((used / max) * 100));
+  const color = pct >= 90 ? '#DC2626' : pct >= 70 ? C.amber : C.green;
+  return (
+    <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, padding: 12 }}>
+      <div style={{ fontSize: 12, color: C.textSecondary, fontWeight: 600 }}>{label}</div>
+      <div style={{ fontSize: 20, fontWeight: 800, margin: '4px 0 8px' }}>
+        {Number(used ?? 0).toLocaleString()}
+        <span style={{ fontSize: 12, color: C.textMuted, fontWeight: 600 }}> / {unlimited ? '∞' : Number(max).toLocaleString()}</span>
+      </div>
+      {!unlimited && max ? (
+        <div style={{ height: 6, borderRadius: 6, background: C.pageBg, overflow: 'hidden' }}>
+          <div style={{ height: '100%', width: `${pct}%`, background: color, borderRadius: 6 }} />
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -395,6 +395,9 @@ export const api = {
     resetUserPassword: (userId, password) =>
       req(`/platform/users/${userId}/reset-password`, { method: 'POST', body: JSON.stringify(password ? { password } : {}) }),
     plans: () => req('/platform/plans'),
+    updatePlan: (id, data) => req(`/platform/plans/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+    createPlan: (data) => req('/platform/plans', { method: 'POST', body: JSON.stringify(data) }),
+    setPlanFeatures: (id, features) => req(`/platform/plans/${id}/features`, { method: 'PUT', body: JSON.stringify({ features }) }),
     features: () => req('/platform/features'),
     audit: (limit = 100) => req(`/platform/audit?limit=${limit}`),
     tenantUsers: (id) => req(`/platform/tenants/${id}/users`),

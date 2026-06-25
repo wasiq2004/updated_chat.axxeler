@@ -59,6 +59,14 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page, user]);
 
+  // A super admin has NO operational workspace — they only monitor/configure the
+  // platform. Keep them inside the Super Admin console; to actually work inside an
+  // admin's workspace they impersonate (which clears isSuperAdmin for the session).
+  useEffect(() => {
+    if (user?.isSuperAdmin && !user.impersonation && page !== 'super-admin') setPage('super-admin');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, user]);
+
   // Page guard: non-admins can only reach pages granted to them (user.pages).
   // admin-settings is allowed if they have any admin-settings:* sub-page.
   useEffect(() => {
@@ -262,18 +270,6 @@ export default function App() {
             background: '#fff', color: '#B45309', border: 'none', borderRadius: 6,
             padding: '4px 12px', fontWeight: 700, fontSize: 12.5, cursor: 'pointer', fontFamily: FONT,
           }}>View billing</button>
-        </div>
-      )}
-      {user.isSuperAdmin && !user.impersonation && page !== 'super-admin' && (
-        <div style={{
-          background: C.text, color: C.pageBg, fontFamily: FONT, fontSize: 12.5, fontWeight: 600,
-          padding: '6px 16px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
-        }}>
-          <span>Platform owner mode</span>
-          <button onClick={() => setPage('super-admin')} style={{
-            background: 'transparent', color: C.pageBg, border: `1px solid ${C.pageBg}`, borderRadius: 6,
-            padding: '3px 10px', fontWeight: 700, fontSize: 12, cursor: 'pointer', fontFamily: FONT,
-          }}>Open Super Admin console</button>
         </div>
       )}
       <Topbar
