@@ -75,7 +75,7 @@ function publicShape(row) {
  *  credentials. */
 router.get('/google-integrations/status', async (req, res) => {
   try {
-    const creds = await getOAuthCredentials();
+    const creds = await getOAuthCredentials(req.tenantId);
     res.json({
       configured: !!creds,
       redirectUri: creds ? creds.redirectUri : '',
@@ -96,7 +96,7 @@ router.get('/google-integrations/status', async (req, res) => {
 router.get('/google-integrations/credentials', adminOnly, async (req, res) => {
   try {
     const reveal = req.query.reveal === '1';
-    res.json(await getCredentialsForDisplay({ reveal }));
+    res.json(await getCredentialsForDisplay({ reveal, tenantId: req.tenantId }));
   } catch (err) {
     console.error('[google-integrations] credentials GET error:', err.message);
     res.status(500).json({ error: 'Failed to load Google credentials' });
@@ -106,7 +106,7 @@ router.get('/google-integrations/credentials', adminOnly, async (req, res) => {
 router.put('/google-integrations/credentials', adminOnly, async (req, res) => {
   const { clientId, clientSecret, redirectUri } = req.body || {};
   try {
-    await saveCredentials({ clientId, clientSecret, redirectUri, userId: req.user.id });
+    await saveCredentials({ clientId, clientSecret, redirectUri, userId: req.user.id, tenantId: req.tenantId });
     res.json({ ok: true });
   } catch (err) {
     if (err.code === 'VALIDATION') return res.status(400).json({ error: err.message });
@@ -117,7 +117,7 @@ router.put('/google-integrations/credentials', adminOnly, async (req, res) => {
 
 router.delete('/google-integrations/credentials', adminOnly, async (req, res) => {
   try {
-    await deleteCredentials();
+    await deleteCredentials(req.tenantId);
     res.json({ ok: true });
   } catch (err) {
     console.error('[google-integrations] credentials DELETE error:', err.message);
@@ -127,11 +127,16 @@ router.delete('/google-integrations/credentials', adminOnly, async (req, res) =>
 
 router.get('/google-integrations', async (req, res) => {
   try {
+    // Connections are owned per-user; the tenant guard is belt-and-suspenders so a
+    // user can never see a connection outside their workspace.
+    const params = [req.user.id, PROVIDER];
+    const tScope = req.tenantId != null ? ` AND tenant_id = $3` : '';
+    if (req.tenantId != null) params.push(req.tenantId);
     const { rows } = await pool.query(
       `SELECT * FROM coexistence.oauth_credentials
-        WHERE user_id = $1 AND provider = $2
+        WHERE user_id = $1 AND provider = $2${tScope}
         ORDER BY created_at DESC`,
-      [req.user.id, PROVIDER],
+      params,
     );
     res.json(rows.map(publicShape));
   } catch (err) {
@@ -148,11 +153,11 @@ router.get('/google-integrations', async (req, res) => {
  */
 router.post('/google-integrations/authorize', async (req, res) => {
   try {
-    if (!(await isConfigured())) {
+    if (!(await isConfigured(req.tenantId))) {
       return res.status(501).json({ error: 'Google is not configured yet. Add your Google OAuth Client ID, Client Secret, and Redirect URI in Settings → Integrations → Google.' });
     }
     const nonce = crypto.randomBytes(16).toString('hex');
-    const url = await buildAuthUrl({ userId: req.user.id, nonce });
+    const url = await buildAuthUrl({ userId: req.user.id, nonce, tenantId: req.tenantId });
     res.json({ authUrl: url });
   } catch (err) {
     console.error('[google-integrations] authorize error:', err.message);
@@ -182,7 +187,7 @@ publicRouter.get('/google-integrations/callback', async (req, res) => {
     return res.redirect(frontendSettingsUrl({ status: 'error', error: 'Invalid or expired state' }));
   }
   try {
-    const row = await handleCallback({ code: String(code), userId: payload.uid });
+    const row = await handleCallback({ code: String(code), userId: payload.uid, tenantId: payload.tid ?? null });
     res.redirect(frontendSettingsUrl({ status: 'connected', label: row.account_label }));
   } catch (err) {
     console.error('[google-integrations] callback error:', err.message);

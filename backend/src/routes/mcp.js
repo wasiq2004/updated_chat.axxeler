@@ -27,7 +27,7 @@ const adminRouter = Router();
 
 adminRouter.get('/mcp/settings', adminOnly, async (req, res) => {
   try {
-    res.json(await loadSettings());
+    res.json(await loadSettings(req.tenantId));
   } catch (err) {
     console.error('[mcp] settings get error:', err.message);
     res.status(500).json({ error: 'Failed to load MCP settings' });
@@ -37,7 +37,7 @@ adminRouter.get('/mcp/settings', adminOnly, async (req, res) => {
 adminRouter.put('/mcp/settings', adminOnly, async (req, res) => {
   try {
     const b = req.body || {};
-    const cur = await loadSettings();
+    const cur = await loadSettings(req.tenantId);
     const masterEnabled = b.masterEnabled !== undefined ? !!b.masterEnabled : cur.masterEnabled;
     const caps = { ...cur.capabilities };
     if (b.capabilities && typeof b.capabilities === 'object') {
@@ -45,13 +45,26 @@ adminRouter.put('/mcp/settings', adminOnly, async (req, res) => {
         if (b.capabilities[k] !== undefined) caps[k] = !!b.capabilities[k];
       }
     }
-    await pool.query(
-      `UPDATE coexistence.mcp_settings
-          SET master_enabled = $1, capabilities = $2, updated_at = NOW()
-        WHERE id = 1`,
-      [masterEnabled, JSON.stringify(caps)],
-    );
-    res.json(await loadSettings());
+    // One settings row per tenant (upsert). Legacy/no-tenant falls back to the
+    // single existing row.
+    if (req.tenantId != null) {
+      await pool.query(
+        `INSERT INTO coexistence.mcp_settings (tenant_id, master_enabled, capabilities)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (tenant_id) DO UPDATE
+            SET master_enabled = EXCLUDED.master_enabled,
+                capabilities   = EXCLUDED.capabilities,
+                updated_at     = NOW()`,
+        [req.tenantId, masterEnabled, JSON.stringify(caps)],
+      );
+    } else {
+      await pool.query(
+        `UPDATE coexistence.mcp_settings SET master_enabled = $1, capabilities = $2, updated_at = NOW()
+          WHERE id = (SELECT id FROM coexistence.mcp_settings ORDER BY id LIMIT 1)`,
+        [masterEnabled, JSON.stringify(caps)],
+      );
+    }
+    res.json(await loadSettings(req.tenantId));
   } catch (err) {
     console.error('[mcp] settings put error:', err.message);
     res.status(500).json({ error: 'Failed to update MCP settings' });
@@ -72,7 +85,10 @@ function keyShape(r) {
 
 adminRouter.get('/mcp/keys', adminOnly, async (req, res) => {
   try {
-    const { rows } = await pool.query('SELECT * FROM coexistence.mcp_api_keys ORDER BY created_at DESC');
+    const params = [];
+    const where = req.tenantId != null ? 'WHERE tenant_id = $1' : '';
+    if (req.tenantId != null) params.push(req.tenantId);
+    const { rows } = await pool.query(`SELECT * FROM coexistence.mcp_api_keys ${where} ORDER BY created_at DESC`, params);
     res.json(rows.map(keyShape));
   } catch (err) {
     console.error('[mcp] keys list error:', err.message);
@@ -88,9 +104,9 @@ adminRouter.post('/mcp/keys', adminOnly, async (req, res) => {
     const keyPrefix = plain.slice(0, 13);
     const keyLast4 = plain.slice(-4);
     const { rows } = await pool.query(
-      `INSERT INTO coexistence.mcp_api_keys (label, key_prefix, key_last4, key_hash, created_by)
-       VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-      [label, keyPrefix, keyLast4, hashApiKey(plain), req.user?.id || null],
+      `INSERT INTO coexistence.mcp_api_keys (label, key_prefix, key_last4, key_hash, created_by, tenant_id)
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+      [label, keyPrefix, keyLast4, hashApiKey(plain), req.user?.id || null, req.tenantId ?? null],
     );
     res.status(201).json({ ...keyShape(rows[0]), key: plain });
   } catch (err) {
@@ -109,8 +125,10 @@ adminRouter.put('/mcp/keys/:id', adminOnly, async (req, res) => {
     if (b.isEnabled !== undefined) { sets.push(`is_enabled = $${i++}`); params.push(!!b.isEnabled); }
     if (sets.length === 0) return res.status(400).json({ error: 'No updatable fields provided' });
     params.push(req.params.id);
+    let tenantGuard = '';
+    if (req.tenantId != null) { params.push(req.tenantId); tenantGuard = ` AND tenant_id = $${i + 1}`; }
     const { rows } = await pool.query(
-      `UPDATE coexistence.mcp_api_keys SET ${sets.join(', ')} WHERE id = $${i} RETURNING *`,
+      `UPDATE coexistence.mcp_api_keys SET ${sets.join(', ')} WHERE id = $${i}${tenantGuard} RETURNING *`,
       params,
     );
     if (rows.length === 0) return res.status(404).json({ error: 'Not found' });
@@ -123,7 +141,10 @@ adminRouter.put('/mcp/keys/:id', adminOnly, async (req, res) => {
 
 adminRouter.delete('/mcp/keys/:id', adminOnly, async (req, res) => {
   try {
-    const { rowCount } = await pool.query('DELETE FROM coexistence.mcp_api_keys WHERE id = $1', [req.params.id]);
+    const params = [req.params.id];
+    let tenantGuard = '';
+    if (req.tenantId != null) { params.push(req.tenantId); tenantGuard = ' AND tenant_id = $2'; }
+    const { rowCount } = await pool.query(`DELETE FROM coexistence.mcp_api_keys WHERE id = $1${tenantGuard}`, params);
     if (rowCount === 0) return res.status(404).json({ error: 'Not found' });
     res.json({ ok: true });
   } catch (err) {
@@ -168,9 +189,10 @@ async function mcpKeyAuth(req, res, next) {
     const hdr = req.headers.authorization || '';
     const m = hdr.match(/^Bearer\s+(.+)$/i);
     if (!m) return res.status(401).json({ error: 'Missing bearer token' });
-    const { capabilities, keyId } = await mcpService.validateKey(m[1]);
-    req.mcp = { capabilities };
-    req.user = { id: keyId, role: 'admin', viaMcp: true };
+    const { capabilities, keyId, tenantId } = await mcpService.validateKey(m[1]);
+    req.mcp = { capabilities, tenantId };
+    req.tenantId = tenantId ?? null;
+    req.user = { id: keyId, role: 'admin', viaMcp: true, tenantId: tenantId ?? null };
     next();
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message || 'Authentication failed' });
@@ -212,15 +234,15 @@ async function discovery(res, fn, fallback) {
 
 /* --------- discovery --------- */
 apiRouter.get('/wa-accounts', requireCap('discovery'), (req, res) =>
-  discovery(res, () => mcpService.listWaAccounts(), 'Failed to list WhatsApp accounts'));
+  discovery(res, () => mcpService.listWaAccounts(req.tenantId), 'Failed to list WhatsApp accounts'));
 apiRouter.get('/models', requireCap('discovery'), (req, res) =>
-  discovery(res, () => mcpService.listModels(), 'Failed to list models'));
+  discovery(res, () => mcpService.listModels(req.tenantId), 'Failed to list models'));
 apiRouter.get('/google-accounts', requireCap('discovery'), (req, res) =>
-  discovery(res, () => mcpService.listGoogleAccounts(), 'Failed to list Google accounts'));
+  discovery(res, () => mcpService.listGoogleAccounts(req.tenantId), 'Failed to list Google accounts'));
 apiRouter.get('/spreadsheets', requireCap('discovery'), (req, res) =>
-  discovery(res, () => mcpService.searchSpreadsheets({ googleAccountId: req.query.googleAccountId, q: String(req.query.q || ''), pageSize: parseInt(req.query.pageSize || '50', 10) }), 'Failed to list spreadsheets'));
+  discovery(res, () => mcpService.searchSpreadsheets({ googleAccountId: req.query.googleAccountId, q: String(req.query.q || ''), pageSize: parseInt(req.query.pageSize || '50', 10), tenantId: req.tenantId }), 'Failed to list spreadsheets'));
 apiRouter.get('/spreadsheets/:id/tabs', requireCap('discovery'), (req, res) =>
-  discovery(res, () => mcpService.listSheetTabs(req.query.googleAccountId, req.params.id), 'Failed to load spreadsheet tabs'));
+  discovery(res, () => mcpService.listSheetTabs(req.query.googleAccountId, req.params.id, req.tenantId), 'Failed to load spreadsheet tabs'));
 apiRouter.get('/spreadsheets/:id/values', requireCap('discovery'), (req, res) =>
   discovery(res, () => mcpService.readSheetValues({
     googleAccountId: req.query.googleAccountId,
@@ -228,22 +250,24 @@ apiRouter.get('/spreadsheets/:id/values', requireCap('discovery'), (req, res) =>
     tab: req.query.tab,
     range: req.query.range || undefined,
     maxRows: req.query.maxRows,
+    tenantId: req.tenantId,
   }), 'Failed to read spreadsheet values'));
 apiRouter.get('/media', requireCap('discovery'), (req, res) =>
   discovery(res, () => mcpService.listMedia(
     req.query.type ? String(req.query.type) : null,
     req.query.name ? String(req.query.name) : null,
+    req.tenantId,
   ), 'Failed to list media'));
 apiRouter.get('/templates', requireCap('discovery'), (req, res) =>
-  discovery(res, () => mcpService.listTemplates(req.query.waAccountId), 'Failed to list templates'));
+  discovery(res, () => mcpService.listTemplates(req.query.waAccountId, req.tenantId), 'Failed to list templates'));
 apiRouter.get('/templates/:id', requireCap('discovery'), (req, res) =>
-  discovery(res, () => mcpService.getTemplate(req.params.id), 'Failed to fetch template'));
+  discovery(res, () => mcpService.getTemplate(req.params.id, req.tenantId), 'Failed to fetch template'));
 apiRouter.get('/agents', requireCap('discovery'), async (req, res) => {
-  try { res.json(await agentService.listAgents()); } catch (err) { sendErr(res, err, 'Failed to list agents'); }
+  try { res.json(await agentService.listAgents(req.tenantId)); } catch (err) { sendErr(res, err, 'Failed to list agents'); }
 });
 apiRouter.get('/agents/:id', requireCap('discovery'), async (req, res) => {
   try {
-    const agent = await agentService.getAgent(req.params.id);
+    const agent = await agentService.getAgent(req.params.id, req.tenantId);
     if (!agent) return res.status(404).json({ error: 'Not found' });
     res.json(agent);
   } catch (err) { sendErr(res, err, 'Failed to fetch agent'); }
@@ -251,22 +275,22 @@ apiRouter.get('/agents/:id', requireCap('discovery'), async (req, res) => {
 
 /* --------- mutations --------- */
 apiRouter.post('/agents', requireCap('create_agent'), async (req, res) => {
-  try { res.status(201).json(await agentService.createAgent(req.body || {})); } catch (err) { sendErr(res, err, 'Failed to create agent'); }
+  try { res.status(201).json(await agentService.createAgent(req.body || {}, req.tenantId)); } catch (err) { sendErr(res, err, 'Failed to create agent'); }
 });
 apiRouter.put('/agents/:id', requireCap('update_agent'), async (req, res) => {
-  try { res.json(await agentService.updateAgent(req.params.id, req.body || {})); } catch (err) { sendErr(res, err, 'Failed to update agent'); }
+  try { res.json(await agentService.updateAgent(req.params.id, req.body || {}, req.tenantId)); } catch (err) { sendErr(res, err, 'Failed to update agent'); }
 });
 apiRouter.post('/agents/:id/tools', requireCap('manage_tools'), async (req, res) => {
-  try { res.status(201).json(await agentService.addTool(req.params.id, req.body || {})); } catch (err) { sendErr(res, err, 'Failed to add tool'); }
+  try { res.status(201).json(await agentService.addTool(req.params.id, req.body || {}, req.tenantId)); } catch (err) { sendErr(res, err, 'Failed to add tool'); }
 });
 apiRouter.put('/agents/:id/tools/:toolId', requireCap('manage_tools'), async (req, res) => {
-  try { res.json(await agentService.updateTool(req.params.id, req.params.toolId, req.body || {})); } catch (err) { sendErr(res, err, 'Failed to update tool'); }
+  try { res.json(await agentService.updateTool(req.params.id, req.params.toolId, req.body || {}, req.tenantId)); } catch (err) { sendErr(res, err, 'Failed to update tool'); }
 });
 apiRouter.delete('/agents/:id/tools/:toolId', requireCap('delete'), async (req, res) => {
-  try { res.json(await agentService.deleteTool(req.params.id, req.params.toolId)); } catch (err) { sendErr(res, err, 'Failed to delete tool'); }
+  try { res.json(await agentService.deleteTool(req.params.id, req.params.toolId, req.tenantId)); } catch (err) { sendErr(res, err, 'Failed to delete tool'); }
 });
 apiRouter.delete('/agents/:id', requireCap('delete'), async (req, res) => {
-  try { res.json(await agentService.deleteAgent(req.params.id)); } catch (err) { sendErr(res, err, 'Failed to delete agent'); }
+  try { res.json(await agentService.deleteAgent(req.params.id, req.tenantId)); } catch (err) { sendErr(res, err, 'Failed to delete agent'); }
 });
 
 module.exports = { adminRouter, apiRouter, ensureMcpTables };

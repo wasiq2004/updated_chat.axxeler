@@ -56,23 +56,31 @@ const STATE_TTL_SECONDS = 10 * 60; // 10 min consent window
  * configured them yet. This is the single source of truth — there is no env-var
  * fallback (configuration is UI-only).
  */
-async function getOAuthCredentials() {
+async function getOAuthCredentials(tenantId = null) {
+  // Per-tenant when a tenantId is given (each admin configures their OWN Google
+  // app); falls back to the newest row when no tenant context (legacy / single
+  // tenant) so existing installs keep working.
+  const params = [];
+  let where = '';
+  if (tenantId != null) { params.push(tenantId); where = 'WHERE tenant_id = $1'; }
   const { rows } = await pool.query(
-    `SELECT id, client_id_encrypted, client_secret_encrypted, redirect_uri, updated_at
+    `SELECT id, tenant_id, client_id_encrypted, client_secret_encrypted, redirect_uri, updated_at
        FROM coexistence.google_oauth_credentials
+       ${where}
       ORDER BY id DESC LIMIT 1`,
+    params,
   );
   if (rows.length === 0) return null;
   const r = rows[0];
   const clientId = decrypt(r.client_id_encrypted);
   const clientSecret = decrypt(r.client_secret_encrypted);
   if (!clientId || !clientSecret || !r.redirect_uri) return null;
-  return { id: r.id, clientId, clientSecret, redirectUri: r.redirect_uri, updatedAt: r.updated_at };
+  return { id: r.id, tenantId: r.tenant_id, clientId, clientSecret, redirectUri: r.redirect_uri, updatedAt: r.updated_at };
 }
 
 /** True when an admin has saved a complete, decryptable set of credentials. */
-async function isConfigured() {
-  return !!(await getOAuthCredentials());
+async function isConfigured(tenantId = null) {
+  return !!(await getOAuthCredentials(tenantId));
 }
 
 /**
@@ -82,8 +90,8 @@ async function isConfigured() {
  * screen asks for it explicitly so the admin can see/verify what is integrated
  * (same posture as the AI Models registry's ?reveal=1).
  */
-async function getCredentialsForDisplay({ reveal = false } = {}) {
-  const creds = await getOAuthCredentials();
+async function getCredentialsForDisplay({ reveal = false, tenantId = null } = {}) {
+  const creds = await getOAuthCredentials(tenantId);
   if (!creds) return { configured: false };
   const out = {
     configured: true,
@@ -101,15 +109,21 @@ async function getCredentialsForDisplay({ reveal = false } = {}) {
  * without re-typing the secret). Throws with a friendly message when the secret
  * is required but missing.
  */
-async function saveCredentials({ clientId, clientSecret, redirectUri, userId }) {
+async function saveCredentials({ clientId, clientSecret, redirectUri, userId, tenantId = null }) {
   const id = String(clientId || '').trim();
   const redirect = String(redirectUri || '').trim();
   const secret = String(clientSecret || '').trim();
   if (!id) { const e = new Error('Client ID is required.'); e.code = 'VALIDATION'; throw e; }
   if (!redirect) { const e = new Error('Redirect URI is required.'); e.code = 'VALIDATION'; throw e; }
 
+  // Existing row for THIS tenant (so changing the Client ID without re-typing the
+  // secret keeps the tenant's own secret, never another tenant's).
+  const exParams = [];
+  let exWhere = '';
+  if (tenantId != null) { exParams.push(tenantId); exWhere = 'WHERE tenant_id = $1'; }
   const { rows: existing } = await pool.query(
-    `SELECT id, client_secret_encrypted FROM coexistence.google_oauth_credentials ORDER BY id DESC LIMIT 1`,
+    `SELECT id, client_secret_encrypted FROM coexistence.google_oauth_credentials ${exWhere} ORDER BY id DESC LIMIT 1`,
+    exParams,
   );
 
   let secretEnc;
@@ -126,9 +140,9 @@ async function saveCredentials({ clientId, clientSecret, redirectUri, userId }) 
   if (existing.length === 0) {
     await pool.query(
       `INSERT INTO coexistence.google_oauth_credentials
-         (client_id_encrypted, client_secret_encrypted, redirect_uri, updated_by)
-       VALUES ($1, $2, $3, $4)`,
-      [encrypt(id), secretEnc, redirect, userId || null],
+         (tenant_id, client_id_encrypted, client_secret_encrypted, redirect_uri, updated_by)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [tenantId, encrypt(id), secretEnc, redirect, userId || null],
     );
   } else {
     await pool.query(
@@ -144,13 +158,17 @@ async function saveCredentials({ clientId, clientSecret, redirectUri, userId }) 
   }
 }
 
-/** Remove the saved credentials. New connections can't start until re-saved. */
-async function deleteCredentials() {
-  await pool.query('DELETE FROM coexistence.google_oauth_credentials');
+/** Remove the saved credentials for a tenant. New connections can't start until re-saved. */
+async function deleteCredentials(tenantId = null) {
+  if (tenantId != null) {
+    await pool.query('DELETE FROM coexistence.google_oauth_credentials WHERE tenant_id = $1', [tenantId]);
+  } else {
+    await pool.query('DELETE FROM coexistence.google_oauth_credentials');
+  }
 }
 
-async function buildOAuthClient() {
-  const creds = await getOAuthCredentials();
+async function buildOAuthClient(tenantId = null) {
+  const creds = await getOAuthCredentials(tenantId);
   if (!creds) {
     const err = new Error('Google is not configured yet. Add your Google OAuth Client ID, Client Secret, and Redirect URI in Settings → Integrations → Google.');
     err.code = 'GOOGLE_OAUTH_NOT_CONFIGURED';
@@ -159,9 +177,9 @@ async function buildOAuthClient() {
   return new google.auth.OAuth2(creds.clientId, creds.clientSecret, creds.redirectUri);
 }
 
-function signState({ userId, nonce }) {
+function signState({ userId, nonce, tenantId = null }) {
   return jwt.sign(
-    { uid: userId, n: nonce, kind: 'google_oauth_state' },
+    { uid: userId, n: nonce, tid: tenantId, kind: 'google_oauth_state' },
     process.env.JWT_SECRET || 'z-chat-dev-secret-change-me',
     { expiresIn: STATE_TTL_SECONDS },
   );
@@ -186,8 +204,8 @@ function verifyState(state) {
  *  every time (without prompt=consent, Google only emits a refresh_token on the
  *  FIRST consent — re-connecting the same account would leave us tokenless).
  */
-async function buildAuthUrl({ userId, nonce, scopes = SHEETS_SCOPES }) {
-  const client = await buildOAuthClient();
+async function buildAuthUrl({ userId, nonce, tenantId = null, scopes = SHEETS_SCOPES }) {
+  const client = await buildOAuthClient(tenantId);
   // NOTE: `include_granted_scopes` is intentionally OFF. With it on, Google
   // adds back every scope the user has ever granted to this OAuth Client
   // (e.g. Gmail, Calendar, full Drive from a previous setup) on top of what
@@ -200,7 +218,7 @@ async function buildAuthUrl({ userId, nonce, scopes = SHEETS_SCOPES }) {
     access_type: 'offline',
     prompt: 'consent',
     scope: scopes,
-    state: signState({ userId, nonce }),
+    state: signState({ userId, nonce, tenantId }),
   });
 }
 
@@ -208,8 +226,8 @@ async function buildAuthUrl({ userId, nonce, scopes = SHEETS_SCOPES }) {
  * Exchange an auth code for tokens, derive the user's Google email from the
  * id_token, and upsert into oauth_credentials (encrypted).
  */
-async function handleCallback({ code, userId }) {
-  const client = await buildOAuthClient();
+async function handleCallback({ code, userId, tenantId = null }) {
+  const client = await buildOAuthClient(tenantId);
   const { tokens } = await client.getToken(code);
   // tokens: { access_token, refresh_token, id_token, expiry_date, scope, token_type }
 
@@ -244,22 +262,23 @@ async function handleCallback({ code, userId }) {
   // (refresh token rotates) instead of failing with a unique-violation.
   const { rows } = await pool.query(
     `INSERT INTO coexistence.oauth_credentials
-       (user_id, provider, account_label,
+       (user_id, tenant_id, provider, account_label,
         refresh_token_encrypted, access_token_encrypted, access_token_expires_at,
         scopes, health_status, last_refreshed_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, 'ok', NOW())
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'ok', NOW())
      ON CONFLICT (user_id, provider, account_label) DO UPDATE
         SET refresh_token_encrypted = EXCLUDED.refresh_token_encrypted,
             access_token_encrypted  = EXCLUDED.access_token_encrypted,
             access_token_expires_at = EXCLUDED.access_token_expires_at,
             scopes                  = EXCLUDED.scopes,
+            tenant_id               = EXCLUDED.tenant_id,
             health_status           = 'ok',
             last_error_message      = NULL,
             last_refreshed_at       = NOW(),
             updated_at              = NOW()
      RETURNING *`,
     [
-      userId, PROVIDER, accountLabel,
+      userId, tenantId, PROVIDER, accountLabel,
       encrypt(tokens.refresh_token), encrypt(tokens.access_token || ''),
       expiresAt, scopes,
     ],
@@ -291,8 +310,8 @@ async function getAccessToken(credentialId) {
     return cached;
   }
 
-  // Refresh.
-  const client = await buildOAuthClient();
+  // Refresh — use the Google app of the tenant that owns this connection.
+  const client = await buildOAuthClient(row.tenant_id);
   const refreshToken = decrypt(row.refresh_token_encrypted);
   if (!refreshToken) {
     await markUnhealthy(credentialId, 'Refresh token missing or unreadable; reconnect this Google account.');
@@ -346,14 +365,14 @@ async function markUnhealthy(credentialId, message) {
  */
 async function revokeAndDelete(credentialId) {
   const { rows } = await pool.query(
-    'SELECT refresh_token_encrypted FROM coexistence.oauth_credentials WHERE id = $1',
+    'SELECT refresh_token_encrypted, tenant_id FROM coexistence.oauth_credentials WHERE id = $1',
     [credentialId],
   );
   if (rows.length === 0) return false;
   const refreshToken = decrypt(rows[0].refresh_token_encrypted);
   if (refreshToken) {
     try {
-      const client = await buildOAuthClient();
+      const client = await buildOAuthClient(rows[0].tenant_id);
       await client.revokeToken(refreshToken);
     } catch (e) {
       console.warn('[googleAuth] revokeToken failed (deleting locally anyway):', e.message);

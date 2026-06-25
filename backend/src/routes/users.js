@@ -11,7 +11,7 @@ const { Router } = require('express');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const pool = require('../db');
-const { adminOnly, auditLog, blockDuringImpersonation } = require('../middleware/access');
+const { adminOnly, auditLog, blockDuringImpersonation, scopeClause } = require('../middleware/access');
 const { PAGES, ROLE_PAGE_DEFAULTS } = require('../permissions');
 const { checkLimit } = require('../services/entitlements');
 
@@ -97,8 +97,12 @@ function validatePermissions(perms) {
 // ─── List ───────────────────────────────────────────────────────────
 router.get('/users', adminOnly, async (req, res) => {
   try {
+    // Tenant-scoped: an admin only ever sees users in their own workspace. The
+    // platform super admin (tenant_id NULL) and other tenants' users are excluded.
+    const params = [];
+    const where = scopeClause(req, null, params, { leading: 'WHERE ' });
     const { rows } = await pool.query(
-      `SELECT * FROM coexistence.z_chat_users ORDER BY created_at`
+      `SELECT * FROM coexistence.z_chat_users ${where} ORDER BY created_at`, params
     );
     const assignmentsMap = await loadAssignments(rows.map(r => r.id));
     res.json(rows.map(r => shapeUser(r, assignmentsMap.get(r.id) || [])));
@@ -110,9 +114,11 @@ router.get('/users', adminOnly, async (req, res) => {
 
 router.get('/users/:id', adminOnly, async (req, res) => {
   try {
+    const params = [req.params.id];
+    const scope = scopeClause(req, null, params);
     const { rows } = await pool.query(
-      `SELECT * FROM coexistence.z_chat_users WHERE id = $1`,
-      [req.params.id]
+      `SELECT * FROM coexistence.z_chat_users WHERE id = $1${scope}`,
+      params
     );
     if (rows.length === 0) return res.status(404).json({ error: 'Not found' });
     const assignmentsMap = await loadAssignments([rows[0].id]);
@@ -232,7 +238,10 @@ router.post('/users', adminOnly, async (req, res) => {
 router.patch('/users/:id', adminOnly, async (req, res) => {
   const id = req.params.id;
   try {
-    const { rows: existing } = await pool.query(`SELECT * FROM coexistence.z_chat_users WHERE id = $1`, [id]);
+    // Scope the lookup so an admin can't read/modify a user outside their tenant.
+    const lp = [id];
+    const lScope = scopeClause(req, null, lp);
+    const { rows: existing } = await pool.query(`SELECT * FROM coexistence.z_chat_users WHERE id = $1${lScope}`, lp);
     if (existing.length === 0) return res.status(404).json({ error: 'Not found' });
     const before = existing[0];
 
@@ -329,9 +338,11 @@ router.patch('/users/:id', adminOnly, async (req, res) => {
 router.post('/users/:id/reset-password', adminOnly, blockDuringImpersonation, async (req, res) => {
   const id = req.params.id;
   try {
+    const lp = [id];
+    const lScope = scopeClause(req, null, lp);
     const { rows: existing } = await pool.query(
-      `SELECT id, username FROM coexistence.z_chat_users WHERE id = $1`,
-      [id]
+      `SELECT id, username FROM coexistence.z_chat_users WHERE id = $1${lScope}`,
+      lp
     );
     if (existing.length === 0) return res.status(404).json({ error: 'Not found' });
 
@@ -359,12 +370,14 @@ router.delete('/users/:id', adminOnly, blockDuringImpersonation, async (req, res
     if (String(req.user.id) === String(id)) {
       return res.status(400).json({ error: 'You cannot delete your own account' });
     }
+    const lp = [id];
+    const lScope = scopeClause(req, null, lp);
     const { rows: existing } = await pool.query(
-      `SELECT username, role FROM coexistence.z_chat_users WHERE id = $1`,
-      [id]
+      `SELECT username, role FROM coexistence.z_chat_users WHERE id = $1${lScope}`,
+      lp
     );
     if (existing.length === 0) return res.status(404).json({ error: 'Not found' });
-    await pool.query(`DELETE FROM coexistence.z_chat_users WHERE id = $1`, [id]);
+    await pool.query(`DELETE FROM coexistence.z_chat_users WHERE id = $1${lScope}`, lp);
     await auditLog({
       actor: req.user, action: 'user.delete',
       targetType: 'user', targetId: id, payload: existing[0],
@@ -381,15 +394,24 @@ router.get('/audit-log', adminOnly, async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit || 50, 10), 200);
     const offset = Math.max(parseInt(req.query.offset || 0, 10), 0);
-    const { rows: countRows } = await pool.query(`SELECT COUNT(*)::int AS total FROM coexistence.user_audit_log`);
+    // Tenant-scope the audit log: an admin sees only their workspace's entries.
+    const tid = req.tenantId;
+    const filter = tid != null ? 'WHERE tenant_id = $1' : '';
+    const { rows: countRows } = await pool.query(
+      `SELECT COUNT(*)::int AS total FROM coexistence.user_audit_log ${filter}`,
+      tid != null ? [tid] : []
+    );
+    const base = tid != null ? 2 : 1; // first placeholder for LIMIT
+    const params = tid != null ? [tid, limit, offset] : [limit, offset];
     const { rows } = await pool.query(
       `SELECT id, actor_user_id AS "actorUserId", actor_username AS "actorUsername",
               action, target_type AS "targetType", target_id AS "targetId",
               payload, created_at AS "createdAt"
          FROM coexistence.user_audit_log
+         ${filter}
         ORDER BY created_at DESC
-        LIMIT $1 OFFSET $2`,
-      [limit, offset]
+        LIMIT $${base} OFFSET $${base + 1}`,
+      params
     );
     res.json({ total: countRows[0].total, limit, offset, items: rows });
   } catch (err) {

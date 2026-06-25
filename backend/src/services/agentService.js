@@ -144,7 +144,29 @@ async function fetchAgent(id) {
 
 /* ------------------------------ reads -------------------------------- */
 
-async function listAgents() {
+// All agentService callers are the MCP transports, which always pass the key's
+// tenantId so an MCP key can only ever see/touch its own workspace's agents. A
+// null tenantId (legacy / no tenant context) is unscoped for backward-compat.
+function agentTenantClause(tenantId, params, alias = 'a') {
+  if (tenantId == null) return '';
+  params.push(tenantId);
+  return ` AND ${alias}.tenant_id = $${params.length}`;
+}
+
+// Throws ApiError(404) when the agent isn't in the caller's tenant — the guard
+// for every by-id mutation reached through MCP.
+async function assertAgentTenant(id, tenantId) {
+  const params = [id];
+  const scope = agentTenantClause(tenantId, params);
+  const { rows } = await pool.query(
+    `SELECT 1 FROM coexistence.agents a WHERE a.id = $1${scope}`, params,
+  );
+  if (rows.length === 0) throw new ApiError(404, 'Agent not found');
+}
+
+async function listAgents(tenantId = null) {
+  const params = [];
+  const scope = agentTenantClause(tenantId, params);
   const { rows } = await pool.query(
     `SELECT a.*,
             am.provider AS ai_provider,
@@ -153,7 +175,9 @@ async function listAgents() {
             (SELECT MAX(started_at) FROM coexistence.agent_runs r WHERE r.agent_id = a.id) AS last_run_at
        FROM coexistence.agents a
        LEFT JOIN coexistence.ai_models am ON am.id = a.ai_model_id
+      WHERE TRUE${scope}
        ORDER BY a.updated_at DESC`,
+    params,
   );
   return rows.map(r => ({
     ...agentShape(r),
@@ -162,14 +186,16 @@ async function listAgents() {
   }));
 }
 
-// Returns { ...agent, tools[] } or null if the agent doesn't exist.
-async function getAgent(id) {
+// Returns { ...agent, tools[] } or null if the agent doesn't exist in the tenant.
+async function getAgent(id, tenantId = null) {
+  const params = [id];
+  const scope = agentTenantClause(tenantId, params);
   const { rows } = await pool.query(
     `SELECT a.*, am.provider AS ai_provider, am.label AS ai_label
        FROM coexistence.agents a
        LEFT JOIN coexistence.ai_models am ON am.id = a.ai_model_id
-      WHERE a.id = $1`,
-    [id],
+      WHERE a.id = $1${scope}`,
+    params,
   );
   if (rows.length === 0) return null;
   const { rows: tools } = await pool.query(
@@ -189,7 +215,7 @@ function mapPgError(err) {
   return err;
 }
 
-async function createAgent(b = {}) {
+async function createAgent(b = {}, tenantId = null) {
   if (!b.name || !b.systemPrompt) {
     throw new ApiError(400, 'name and systemPrompt are required');
   }
@@ -229,8 +255,8 @@ async function createAgent(b = {}) {
           trigger_case_sensitive, trigger_session_minutes, media_groups,
           transcribe_audio, accept_images,
           crm_tools_enabled, handoff_enabled, handoff_user_ids, handoff_keywords,
-          close_summary_enabled, close_idle_minutes)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
+          close_summary_enabled, close_idle_minutes, tenant_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
        RETURNING id`,
       [
         b.name.trim(), b.description?.trim() || null,
@@ -250,6 +276,7 @@ async function createAgent(b = {}) {
         sanitizeKeywords(b.handoffKeywords),
         !!b.closeSummaryEnabled,
         Math.max(1, Math.min(1440, parseInt(b.closeIdleMinutes || 30, 10))),
+        tenantId,
       ],
     );
     return await fetchAgent(rows[0].id);
@@ -258,7 +285,8 @@ async function createAgent(b = {}) {
   }
 }
 
-async function updateAgent(id, b = {}) {
+async function updateAgent(id, b = {}, tenantId = null) {
+  await assertAgentTenant(id, tenantId);
   const { rows: existing } = await pool.query(
     'SELECT * FROM coexistence.agents WHERE id = $1',
     [id],
@@ -337,10 +365,12 @@ async function updateAgent(id, b = {}) {
   }
 }
 
-async function deleteAgent(id) {
+async function deleteAgent(id, tenantId = null) {
+  const params = [id];
+  const scope = agentTenantClause(tenantId, params, 'agents');
   const { rowCount } = await pool.query(
-    'DELETE FROM coexistence.agents WHERE id = $1',
-    [id],
+    `DELETE FROM coexistence.agents WHERE id = $1${scope}`,
+    params,
   );
   if (rowCount === 0) throw new ApiError(404, 'Not found');
   return { ok: true };
@@ -544,7 +574,8 @@ function validateToolConfig(toolType, config) {
   return config;
 }
 
-async function addTool(agentId, b = {}) {
+async function addTool(agentId, b = {}, tenantId = null) {
+  await assertAgentTenant(agentId, tenantId);
   if (!b.toolType || !b.config) {
     throw new ApiError(400, 'toolType and config are required');
   }
@@ -557,7 +588,8 @@ async function addTool(agentId, b = {}) {
   return toolShape(rows[0]);
 }
 
-async function updateTool(agentId, toolId, b = {}) {
+async function updateTool(agentId, toolId, b = {}, tenantId = null) {
+  await assertAgentTenant(agentId, tenantId);
   const sets = [];
   const params = [];
   let i = 1;
@@ -583,7 +615,8 @@ async function updateTool(agentId, toolId, b = {}) {
   return toolShape(rows[0]);
 }
 
-async function deleteTool(agentId, toolId) {
+async function deleteTool(agentId, toolId, tenantId = null) {
+  await assertAgentTenant(agentId, tenantId);
   const { rowCount } = await pool.query(
     'DELETE FROM coexistence.agent_tools WHERE agent_id = $1 AND id = $2',
     [agentId, toolId],
