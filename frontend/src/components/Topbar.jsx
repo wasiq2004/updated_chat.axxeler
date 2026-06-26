@@ -1,15 +1,20 @@
 import { useState, useRef, useEffect } from 'react';
-import { Info, LogOut, Settings, AlertTriangle, CreditCard, ScrollText, Palette, Building2 } from 'lucide-react';
+import { Info, LogOut, Settings, AlertTriangle, CreditCard, ScrollText, Palette, Building2, Sun, Moon } from 'lucide-react';
 import { C, FONT } from '../constants.js';
 import { api } from '../api.js';
 import OrgSwitcher from './OrgSwitcher.jsx';
 
-export default function Topbar({ user, onLogout, onNavigate, orgs, activeOrg, onOrgChange, branding }) {
+export default function Topbar({ user, onLogout, onNavigate, orgs, activeOrg, onOrgChange, branding, theme, onToggleTheme }) {
   const isAdmin = user?.role === 'admin';
   // Platform owner / white-label reseller: console-only, no operational pages.
   const isConsoleUser = !!(user?.isSuperAdmin || user?.isResellerAdmin);
-  const logoSrc = branding?.logoUrl || '/logo.png';
   const brandName = branding?.brandName || 'Zen Chat';
+  const customLogo = branding?.logoUrl || null;
+  // A partner/white-label account must never fall back to OUR logo. Show the
+  // partner's uploaded logo if any, else their brand name as text. Only our own
+  // (non-white-label) accounts fall back to /logo.png.
+  const isCustomBrand = !!branding?.isCustom;
+  const logoSrc = customLogo || (isCustomBrand ? null : '/logo.png');
   const [userOpen, setUserOpen] = useState(false);
   const [unhealthyAccounts, setUnhealthyAccounts] = useState([]);
   const ref = useRef(null);
@@ -42,7 +47,7 @@ export default function Topbar({ user, onLogout, onNavigate, orgs, activeOrg, on
       <div
         onClick={() => onNavigate('admin-settings')}
         style={{
-          background: 'linear-gradient(135deg, #E22635, #FF4D5A)', color: '#fff', padding: '8px 16px',
+          background: 'linear-gradient(135deg, var(--c-primary), var(--c-primaryHover))', color: '#fff', padding: '8px 16px',
           fontSize: 12, fontFamily: FONT, display: 'flex', alignItems: 'center',
           justifyContent: 'center', gap: 8, cursor: 'pointer', fontWeight: 500,
           animation: 'fadeInDown 0.3s ease-out both',
@@ -89,11 +94,13 @@ export default function Topbar({ user, onLogout, onNavigate, orgs, activeOrg, on
           cursor: 'pointer',
         }}
       >
-        <img
-          src={logoSrc}
-          alt={brandName}
-          style={{ height: 34, width: 'auto', maxWidth: 180, objectFit: 'contain', display: 'block' }}
-        />
+        {logoSrc
+          ? <img
+              src={logoSrc}
+              alt={brandName}
+              style={{ height: 34, width: 'auto', maxWidth: 180, objectFit: 'contain', display: 'block' }}
+            />
+          : <span style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-0.02em', color: 'var(--c-primary)', whiteSpace: 'nowrap' }}>{brandName}</span>}
       </button>
 
       {/* Organization switcher (multi-org tenants) */}
@@ -110,6 +117,31 @@ export default function Topbar({ user, onLogout, onNavigate, orgs, activeOrg, on
 
       {/* Right controls */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        {/* Light / dark toggle — sliding knob with sun & moon */}
+        {onToggleTheme && (
+          <button
+            onClick={onToggleTheme}
+            title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+            aria-label="Toggle light or dark mode"
+            style={{
+              position: 'relative', width: 62, height: 32, borderRadius: 999,
+              border: `1px solid ${C.headerBorder}`,
+              background: theme === 'dark' ? 'rgba(255,255,255,.06)' : 'rgba(15,168,224,.08)',
+              cursor: 'pointer', padding: 0, flexShrink: 0,
+            }}
+          >
+            <Sun size={13} style={{ position: 'absolute', left: 9, top: 9, color: theme === 'dark' ? C.headerMuted : '#F6B100', transition: 'color .2s' }} />
+            <Moon size={13} style={{ position: 'absolute', right: 9, top: 9, color: theme === 'dark' ? '#8FD9FF' : C.headerMuted, transition: 'color .2s' }} />
+            <span style={{
+              position: 'absolute', top: 3, left: theme === 'dark' ? 33 : 3,
+              width: 24, height: 24, borderRadius: '50%',
+              background: 'var(--c-primaryGradient, linear-gradient(135deg,#0FA8E0,#38CDF0))',
+              boxShadow: '0 4px 12px rgba(15,168,224,.45)',
+              transition: 'left .28s cubic-bezier(.34,1.56,.64,1)',
+            }} />
+          </button>
+        )}
+
         {/* About Us */}
         <button
           onClick={() => onNavigate('about')}
@@ -133,7 +165,7 @@ export default function Topbar({ user, onLogout, onNavigate, orgs, activeOrg, on
               width: 36,
               height: 36,
               borderRadius: 9,
-              background: 'linear-gradient(135deg, #E22635, #FF4D5A)',
+              background: 'linear-gradient(135deg, var(--c-primary), var(--c-primaryHover))',
               border: userOpen ? '2px solid #fff' : `1px solid ${C.headerBorder}`,
               cursor: 'pointer',
               display: 'flex',

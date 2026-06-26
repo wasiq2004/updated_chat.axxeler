@@ -906,7 +906,7 @@ function BuilderView({ template, onBack, onSave, readOnly, accounts }) {
   const hdrTabStyle = { padding: '7px 14px', borderRadius: 99, fontSize: 12, fontWeight: 600, cursor: 'pointer', border: '1.5px solid var(--c-border)', background: 'var(--c-cardBg)', color: 'var(--c-textSecondary)', transition: 'all .15s', display: 'flex', alignItems: 'center', gap: 5, fontFamily: FONT };
   const hdrTabOnStyle = { ...hdrTabStyle, background: '#111', color: '#fff', borderColor: 'var(--c-text)' };
   const catCardStyle = { border: '2px solid var(--c-border)', borderRadius: 12, padding: '14px 16px', cursor: 'pointer', background: 'var(--c-cardBg)', transition: 'all .18s', textAlign: 'left', width: '100%', fontFamily: FONT };
-  const catCardOnStyle = { ...catCardStyle, borderColor: B.accent, background: 'linear-gradient(135deg, #E22635, #FF4D5A)', boxShadow: '0 10px 28px rgba(226,38,53,.24)' };
+  const catCardOnStyle = { ...catCardStyle, borderColor: B.accent, background: 'linear-gradient(135deg, var(--c-primary), var(--c-primaryHover))', boxShadow: '0 10px 28px rgba(15,168,224,.24)' };
 
   return (
     <div style={{ fontFamily: FONT, background: B.bg, minHeight: '100%', padding: '24px 16px' }}>
@@ -1546,7 +1546,7 @@ function TemplateLibraryPickerModal({ headerType, accountId, onClose, onPicked }
         }}
       >
         <div style={{ padding: '18px 22px', borderBottom: '1px solid var(--c-border)', display: 'flex', alignItems: 'center', gap: 12 }}>
-          <Library size={20} color="#E22635" />
+          <Library size={20} color="var(--c-primary)" />
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--c-text)' }}>Pick {targetType} from Media Library</div>
             <div style={{ fontSize: 12, color: 'var(--c-textSecondary)', marginTop: 2 }}>
@@ -1578,7 +1578,7 @@ function TemplateLibraryPickerModal({ headerType, accountId, onClose, onPicked }
                     onClick={() => setSelected(m)}
                     style={{
                       textAlign: 'left', padding: 0, background: 'var(--c-cardBg)', borderRadius: 10,
-                      border: `2px solid ${isSel ? '#E22635' : 'rgba(0,0,0,.08)'}`,
+                      border: `2px solid ${isSel ? 'var(--c-primary)' : 'rgba(0,0,0,.08)'}`,
                       cursor: 'pointer', overflow: 'hidden', fontFamily: FONT,
                     }}
                   >
@@ -1616,7 +1616,7 @@ function TemplateLibraryPickerModal({ headerType, accountId, onClose, onPicked }
                         <Icon size={40} color={targetType === 'video' ? '#8B5CF6' : '#F59E0B'} />
                       )}
                       {isSel && (
-                        <div style={{ position: 'absolute', top: 6, right: 6, background: '#E22635', color: '#fff', borderRadius: '50%', width: 22, height: 22, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <div style={{ position: 'absolute', top: 6, right: 6, background: 'var(--c-primary)', color: '#fff', borderRadius: '50%', width: 22, height: 22, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                           <CheckCircle2 size={14} />
                         </div>
                       )}
@@ -1649,7 +1649,7 @@ function TemplateLibraryPickerModal({ headerType, accountId, onClose, onPicked }
             disabled={!selected || uploading}
             style={{
               padding: '9px 18px', borderRadius: 8, border: 'none',
-              background: !selected ? 'var(--c-hover)' : '#E22635', color: '#fff',
+              background: !selected ? 'var(--c-hover)' : 'var(--c-primary)', color: '#fff',
               cursor: !selected || uploading ? 'not-allowed' : 'pointer',
               fontSize: 13, fontWeight: 600, fontFamily: FONT,
               display: 'inline-flex', alignItems: 'center', gap: 6,

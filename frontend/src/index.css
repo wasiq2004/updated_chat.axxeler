@@ -10,48 +10,122 @@ html, body, #root {
   overflow: hidden;
 }
 
-/* ─── Light theme · pure white · logo red (#E22635) + near-black ───────── */
+/* ─────────────────────────────────────────────────────────────────────────────
+   ZenAutomation palette — pulled from the logo:
+     • cyan-blue  #0FA8E0  ("utomation")   → --c-primary
+     • gold/amber #F6B100  (the arrow)     → --c-amber
+     • charcoal   #0B1620  ("Zen")         → dark text / dark surfaces
+   Colour tokens are CSS variables so the whole app re-themes when
+   <html data-theme="dark"> flips. :root = LIGHT theme.
+   ──────────────────────────────────────────────────────────────────────────── */
 :root {
   --c-pageBg: #FFFFFF;
   --c-sidebarBg: rgba(255,255,255,.82);
-  --c-sidebarBorder: rgba(0,0,0,.08);
+  --c-sidebarBorder: rgba(11,22,32,.09);
   --c-headerBg: rgba(255,255,255,.85);
-  --c-headerText: #0A0A0A;
-  --c-headerMuted: #71717A;
-  --c-headerBorder: rgba(0,0,0,.08);
-  --c-headerSurface: rgba(0,0,0,.04);
+  --c-headerText: #0B1620;
+  --c-headerMuted: #5B6B7A;
+  --c-headerBorder: rgba(11,22,32,.09);
+  --c-headerSurface: rgba(15,168,224,.07);
   --c-cardBg: #FFFFFF;
-  --c-border: rgba(0,0,0,.10);
-  --c-borderDark: rgba(0,0,0,.14);
-  --c-text: #0A0A0A;
-  --c-textSecondary: #52525B;
-  --c-textMuted: #71717A;
-  --c-primary: #E22635;
-  --c-primaryHover: #C81E2B;
-  --c-primaryLight: rgba(226,38,53,.10);
+  --c-border: rgba(11,22,32,.11);
+  --c-borderDark: rgba(11,22,32,.16);
+  --c-text: #0B1620;
+  --c-textSecondary: #475569;
+  --c-textMuted: #64748B;
+  --c-primary: #0FA8E0;
+  --c-primaryHover: #0B8FC2;
+  --c-primaryLight: rgba(15,168,224,.10);
   --c-primaryText: #FFFFFF;
   --c-purple: #7C3AED;
   --c-green: #16A34A;
-  --c-amber: #D97706;
+  --c-amber: #E59A00;
   --c-error: #DC2626;
-  --c-shadowSm: 0 1px 2px rgba(0,0,0,.06), 0 1px 3px rgba(0,0,0,.08);
-  --c-shadowMd: 0 8px 24px rgba(0,0,0,.10);
-  --c-shadowLg: 0 24px 60px rgba(0,0,0,.18);
-  --c-waBg: #EFEAE2;
+  --c-shadowSm: 0 1px 2px rgba(11,22,32,.05), 0 1px 3px rgba(11,22,32,.07);
+  --c-shadowMd: 0 8px 24px rgba(11,22,32,.10);
+  --c-shadowLg: 0 24px 60px rgba(11,22,32,.16);
+  --c-waBg: #EAF6FB;
   --c-incomingBg: #FFFFFF;
-  --c-incomingText: #111111;
-  --c-outgoingBg: #E22635;
+  --c-incomingText: #0B1620;
+  --c-outgoingBg: #0FA8E0;
   --c-outgoingText: #FFFFFF;
-  --c-chatBg: #ECE5DD;
-  --c-statusDelivered: #53bdeb;
-  --c-statusRead: #53bdeb;
-  --c-statusSent: #8696a0;
-  --c-surface: #FAFAFA;
-  --c-surfaceAlt: #F4F4F5;
-  --c-hover: rgba(0,0,0,.04);
+  --c-chatBg: #E8F4F9;
+  --c-statusDelivered: #0FA8E0;
+  --c-statusRead: #0FA8E0;
+  --c-statusSent: #94A3B8;
+  --c-surface: #F7FAFC;
+  --c-surfaceAlt: #EEF4F8;
+  --c-hover: rgba(15,168,224,.06);
   --c-chatPanel: #FFFFFF;
-  --c-chatWall: #ECE5DD;
-  --c-primaryGradient: linear-gradient(135deg, #E22635 0%, #FF4D5A 100%);
+  --c-chatWall: #E8F4F9;
+  /* Brand gradients — the cyan→amber blend echoes the logo. */
+  --c-primaryGradient: linear-gradient(135deg, #0FA8E0 0%, #38CDF0 100%);
+  --c-brandGradient: linear-gradient(120deg, #0FA8E0 0%, #2BC4E8 48%, #F6B100 125%);
+  --c-amberGradient: linear-gradient(135deg, #F6B100 0%, #FFD24D 100%);
+  --c-glow1: rgba(15,168,224,.08);
+  --c-glow2: rgba(246,177,0,.06);
+  --c-skel1: #ECEFF3;
+  --c-skel2: #F5F7F9;
+  --c-thBg: #F4F8FB;
+  --c-rowHover: rgba(15,168,224,.045);
+  --c-scrollThumb: rgba(11,22,32,.18);
+  --c-scrollThumbHover: rgba(11,22,32,.30);
+  color-scheme: light;
+}
+
+/* ─── Dark theme · charcoal-blue surfaces · brighter cyan ─────────────────── */
+[data-theme="dark"] {
+  --c-pageBg: #0A0F16;
+  --c-sidebarBg: rgba(15,21,30,.74);
+  --c-sidebarBorder: rgba(255,255,255,.08);
+  --c-headerBg: rgba(9,13,20,.86);
+  --c-headerText: #F1F5F9;
+  --c-headerMuted: #94A3B8;
+  --c-headerBorder: rgba(255,255,255,.10);
+  --c-headerSurface: rgba(255,255,255,.06);
+  --c-cardBg: #111923;
+  --c-border: rgba(255,255,255,.09);
+  --c-borderDark: rgba(255,255,255,.13);
+  --c-text: #F1F5F9;
+  --c-textSecondary: #A8B4C2;
+  --c-textMuted: #6B7A8C;
+  --c-primary: #22BEF0;
+  --c-primaryHover: #4ACEF6;
+  --c-primaryLight: rgba(34,190,240,.16);
+  --c-primaryText: #04222E;
+  --c-purple: #A78BFA;
+  --c-green: #34D399;
+  --c-amber: #F6B100;
+  --c-error: #F87171;
+  --c-shadowSm: 0 1px 0 rgba(255,255,255,.03), 0 10px 24px rgba(0,0,0,.42);
+  --c-shadowMd: 0 18px 50px rgba(0,0,0,.52);
+  --c-shadowLg: 0 28px 90px rgba(0,0,0,.66);
+  --c-waBg: #0C1419;
+  --c-incomingBg: #18212C;
+  --c-incomingText: #F1F5F9;
+  --c-outgoingBg: #0E7FA8;
+  --c-outgoingText: #FFFFFF;
+  --c-chatBg: #0A1016;
+  --c-statusDelivered: #45CDF5;
+  --c-statusRead: #45CDF5;
+  --c-statusSent: #6B7A8C;
+  --c-surface: #111923;
+  --c-surfaceAlt: #18212C;
+  --c-hover: rgba(255,255,255,.06);
+  --c-chatPanel: #111923;
+  --c-chatWall: #0A1016;
+  --c-primaryGradient: linear-gradient(135deg, #0E97C9 0%, #2BC4E8 100%);
+  --c-brandGradient: linear-gradient(120deg, #15B0E8 0%, #2BC4E8 48%, #F6B100 130%);
+  --c-amberGradient: linear-gradient(135deg, #F6B100 0%, #FFD24D 100%);
+  --c-glow1: rgba(34,190,240,.10);
+  --c-glow2: rgba(246,177,0,.05);
+  --c-skel1: #161F2A;
+  --c-skel2: #1E2935;
+  --c-thBg: #131C26;
+  --c-rowHover: rgba(255,255,255,.04);
+  --c-scrollThumb: rgba(255,255,255,.16);
+  --c-scrollThumbHover: rgba(255,255,255,.28);
+  color-scheme: dark;
 }
 
 body {
@@ -59,10 +133,11 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   background:
-    radial-gradient(circle at 18% -8%, rgba(226,38,53,.07), transparent 30%),
-    radial-gradient(circle at 82% 0%, rgba(226,38,53,.04), transparent 28%),
+    radial-gradient(circle at 16% -8%, var(--c-glow1), transparent 32%),
+    radial-gradient(circle at 84% 0%, var(--c-glow2), transparent 30%),
     var(--c-pageBg);
   color: var(--c-text);
+  transition: background-color .3s ease, color .3s ease;
 }
 
 input, button, textarea, select {
@@ -138,8 +213,8 @@ input, textarea, select {
 }
 
 @keyframes pulseGlow {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(226,38,53,.28); }
-  50% { box-shadow: 0 0 0 6px rgba(226,38,53,0); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(15,168,224,.30); }
+  50% { box-shadow: 0 0 0 6px rgba(15,168,224,0); }
 }
 
 @keyframes ripple {
@@ -176,12 +251,12 @@ a {
 }
 
 input:focus, textarea:focus, select:focus {
-  border-color: rgba(226,38,53,.72) !important;
-  box-shadow: 0 0 0 3px rgba(226,38,53,.18) !important;
+  border-color: rgba(15,168,224,.72) !important;
+  box-shadow: 0 0 0 3px rgba(15,168,224,.20) !important;
 }
 
 .skeleton {
-  background: linear-gradient(90deg, #ECECEC 25%, #F5F5F5 50%, #ECECEC 75%);
+  background: linear-gradient(90deg, var(--c-skel1) 25%, var(--c-skel2) 50%, var(--c-skel1) 75%);
   background-size: 600px 100%;
   animation: shimmer 1.4s infinite linear;
   border-radius: 10px;
@@ -203,7 +278,7 @@ input:focus, textarea:focus, select:focus {
 .card-hover:hover {
   transform: scale(1.02);
   box-shadow: var(--c-shadowMd);
-  border-color: rgba(0,0,0,.16);
+  border-color: var(--c-borderDark);
 }
 
 .nav-indicator {
@@ -220,21 +295,24 @@ input:focus, textarea:focus, select:focus {
   border-radius: 8px;
 }
 
-/* Promote only buttons whose BACKGROUND is the brand primary to the gradient.
+/* Promote buttons whose BACKGROUND is the brand primary to the gradient.
    Scoped to `background:` so ghost buttons (color: primary) and soft tint
-   buttons (background: primaryLight) are left alone and stay readable. */
+   buttons (background: primaryLight) are left alone and stay readable. The old
+   literal-red matchers stay for any not-yet-migrated inline styles. */
 button[style*="background: var(--c-primary,"],
 button[style*="background:var(--c-primary,"],
+button[style*="background: var(--c-primary)"],
+button[style*="background:var(--c-primary)"],
 button[style*="background: var(--c-primaryGradient"],
 button[style*="background:var(--c-primaryGradient"],
-button[style*="background: linear-gradient(135deg, #E22635"],
-button[style*="background:linear-gradient(135deg,#E22635"],
 button[style*="background: #E22635"],
 button[style*="background:#E22635"],
+button[style*="background: #0FA8E0"],
+button[style*="background:#0FA8E0"],
 button[style*="background: #dc2626"],
 button[style*="background:#dc2626"] {
   background: var(--c-primaryGradient) !important;
-  box-shadow: 0 10px 28px rgba(226,38,53,.24);
+  box-shadow: 0 10px 28px rgba(15,168,224,.26);
 }
 
 table {
@@ -249,7 +327,7 @@ thead {
 }
 
 th {
-  background: #F7F7F8 !important;
+  background: var(--c-thBg) !important;
   color: var(--c-textSecondary) !important;
   border-bottom: 1px solid var(--c-border) !important;
   backdrop-filter: blur(16px);
@@ -264,7 +342,7 @@ tbody tr {
 }
 
 tbody tr:hover {
-  background: rgba(0,0,0,.03) !important;
+  background: var(--c-rowHover) !important;
 }
 
 ::-webkit-scrollbar {
@@ -277,14 +355,14 @@ tbody tr:hover {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(0,0,0,.18);
+  background: var(--c-scrollThumb);
   border: 3px solid transparent;
   border-radius: 999px;
   background-clip: content-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(0,0,0,.30);
+  background: var(--c-scrollThumbHover);
   border: 3px solid transparent;
   background-clip: content-box;
 }

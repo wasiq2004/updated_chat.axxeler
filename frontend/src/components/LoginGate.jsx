@@ -32,7 +32,10 @@ export default function LoginGate({ onLogin, onBack }) {
 
   const accent = (brand?.primaryColor) || C.primary;
   const brandName = brand?.brandName || 'Zen Chat';
-  const logoSrc = brand?.logoUrl || '/logo.png';
+  // A partner (?w=slug) login must never show our identity: use their logo if
+  // set, else render their brand name as text; only our own login uses /logo.png.
+  const isWhiteLabel = !!brand?.isCustom;
+  const logoSrc = brand?.logoUrl || (isWhiteLabel ? null : '/logo.png');
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -74,8 +77,10 @@ export default function LoginGate({ onLogin, onBack }) {
 
         <div style={{ position: 'relative', zIndex: 1, maxWidth: 480 }} className="stagger">
           <div style={{ marginBottom: 40, animation: 'fadeInUp 0.5s ease-out 0.15s both' }}>
-            <img src={logoSrc} alt={brandName}
-              style={{ height: 52, width: 'auto', objectFit: 'contain', display: 'block' }} />
+            {logoSrc
+              ? <img src={logoSrc} alt={brandName}
+                  style={{ height: 52, width: 'auto', objectFit: 'contain', display: 'block' }} />
+              : <span style={{ fontSize: 34, fontWeight: 800, letterSpacing: '-0.02em', color: C.headerText }}>{brandName}</span>}
           </div>
           <h1 style={{
             fontSize: 42, fontWeight: 700, color: C.headerText,
@@ -109,10 +114,12 @@ export default function LoginGate({ onLogin, onBack }) {
           </div>
         </div>
 
-        <div style={{ position: 'absolute', bottom: 28, left: 64, animation: 'fadeIn 0.6s ease-out 0.7s both' }}>
-          <img src="/logo.png" alt="Zen Chat"
-            style={{ height: 22, width: 'auto', objectFit: 'contain', opacity: 0.35 }} />
-        </div>
+        {!isWhiteLabel && (
+          <div style={{ position: 'absolute', bottom: 28, left: 64, animation: 'fadeIn 0.6s ease-out 0.7s both' }}>
+            <img src="/logo.png" alt="Zen Chat"
+              style={{ height: 22, width: 'auto', objectFit: 'contain', opacity: 0.35 }} />
+          </div>
+        )}
       </div>
 
       {/* Right form panel */}

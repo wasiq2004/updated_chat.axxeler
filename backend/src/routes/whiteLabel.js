@@ -21,6 +21,7 @@ publicRouter.get('/branding/by-slug/:slug', async (req, res) => {
     const b = rows[0].branding || {};
     res.json({
       found: true,
+      isCustom: true, // a partner login — never show our default identity
       brandName: typeof b.brandName === 'string' && b.brandName ? b.brandName : rows[0].name,
       primaryColor: /^#[0-9a-fA-F]{6}$/.test(b.primaryColor || '') ? b.primaryColor : null,
       logoUrl: typeof b.logoUrl === 'string' ? b.logoUrl : null,

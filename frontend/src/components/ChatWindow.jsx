@@ -119,7 +119,7 @@ function ReengageModal({ contactNumber, accountId, onClose, onSent }) {
               ) : filtered.map(t => (
                 <div key={t.id} onClick={() => handleSelect(t)}
                   style={{ padding: '11px 14px', borderRadius: 10, cursor: 'pointer', border: `1px solid ${C.border}`, marginBottom: 6, transition: 'border-color 0.15s ease, background 0.15s ease' }}
-                  onMouseEnter={e => { e.currentTarget.style.borderColor = C.primary; e.currentTarget.style.background = 'rgba(226,38,53,.06)'; }}
+                  onMouseEnter={e => { e.currentTarget.style.borderColor = C.primary; e.currentTarget.style.background = 'rgba(15,168,224,.06)'; }}
                   onMouseLeave={e => { e.currentTarget.style.borderColor = C.border; e.currentTarget.style.background = 'transparent'; }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }}>
@@ -1404,10 +1404,10 @@ export default function ChatWindow({ waNumber, contactNumber, onContactSaved }) 
                   padding: '5px 13px', borderRadius: 7, background: C.primary, color: '#fff',
                   border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 700,
                   fontFamily: FONT, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 5,
-                  boxShadow: '0 4px 12px rgba(226,38,53,.28)',
+                  boxShadow: '0 4px 12px rgba(15,168,224,.28)',
                 }}
-                onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-1px)'; e.currentTarget.style.boxShadow = '0 6px 16px rgba(226,38,53,.36)'; }}
-                onMouseLeave={e => { e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = '0 4px 12px rgba(226,38,53,.28)'; }}
+                onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-1px)'; e.currentTarget.style.boxShadow = '0 6px 16px rgba(15,168,224,.36)'; }}
+                onMouseLeave={e => { e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = '0 4px 12px rgba(15,168,224,.28)'; }}
               >
                 <Send size={11} /> Re-engage
               </button>
@@ -1493,7 +1493,7 @@ export default function ChatWindow({ waNumber, contactNumber, onContactSaved }) 
           }}
         >
           {dragOver && (
-            <div style={{ position: 'absolute', inset: 0, background: 'rgba(226,38,53,0.10)', border: `2px dashed ${C.primary}`, borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.primary, fontSize: 13, fontWeight: 600, fontFamily: FONT, zIndex: 5, pointerEvents: 'none' }}>
+            <div style={{ position: 'absolute', inset: 0, background: 'rgba(15,168,224,0.10)', border: `2px dashed ${C.primary}`, borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.primary, fontSize: 13, fontWeight: 600, fontFamily: FONT, zIndex: 5, pointerEvents: 'none' }}>
               Drop file to attach
             </div>
           )}

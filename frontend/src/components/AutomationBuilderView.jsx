@@ -13,7 +13,7 @@ const C = {
   rowDiv:"var(--c-border)", divider:"var(--c-border)", inputBorder:"var(--c-borderDark)",
   text1:"var(--c-text)", text2:"var(--c-text)", text3:"var(--c-textSecondary)", text4:"var(--c-textSecondary)", text5:"var(--c-textMuted)",
   muted:"var(--c-textMuted)", ghost:"var(--c-textMuted)", ph:"var(--c-textMuted)",
-  brand:"#E22635", brandBright:"#FF4D5A", brandDark:"#B91C1C", brandBg:"rgba(226,38,53,.14)", brandTint:"rgba(226,38,53,.08)",
+  brand:"var(--c-primary)", brandBright:"var(--c-primaryHover)", brandDark:"#B91C1C", brandBg:"rgba(15,168,224,.14)", brandTint:"rgba(15,168,224,.08)",
   purple:"#9D7CFF", purpleBg:"rgba(157,124,255,.14)", purpleDark:"#7C3AED",
   red:"#EF4444", redBg:"rgba(239,68,68,.14)", redDark:"#DC2626",
   orange:"#F59E0B", orangeBg:"rgba(245,158,11,.14)", orangeBorder:"rgba(245,158,11,.28)", orangeText:"#D97706",
@@ -370,7 +370,7 @@ const Pill = ({ active, children, onClick, color=C.brand, bg=C.brandBg, textDark
     background:active?bg:"transparent",
     color:active?textDark:C.text4,
     fontFamily:"'Manrope'", fontWeight:600, cursor:"pointer", whiteSpace:"nowrap",
-    transition:"all .14s", boxShadow:active?"0 1px 3px rgba(226,38,53,.16)":"none",
+    transition:"all .14s", boxShadow:active?"0 1px 3px rgba(15,168,224,.16)":"none",
   }}>{children}</button>
 );
 
@@ -672,7 +672,7 @@ const FlowNode = ({ n, selected, onSelect, onOpenDetail, onStartDrag, onStartCon
         position:"absolute", left:n.x, top:n.y, width:NODE_W, minHeight:h, background:C.cardBg,
         border: selected ? `1.5px solid ${SEL}` : `1px solid ${isDisabled ? "rgba(0,0,0,.12)" : C.cardBorder}`,
         borderRadius:14,
-        boxShadow: selected ? `0 0 0 4px rgba(226,38,53,.14), 0 16px 36px rgba(0,0,0,.12)` : "0 1px 2px rgba(0,0,0,.04), 0 6px 18px rgba(0,0,0,.05)",
+        boxShadow: selected ? `0 0 0 4px rgba(15,168,224,.14), 0 16px 36px rgba(0,0,0,.12)` : "0 1px 2px rgba(0,0,0,.04), 0 6px 18px rgba(0,0,0,.05)",
         cursor:"grab", userSelect:"none", fontFamily:"'Manrope'", overflow:"visible", transition:"box-shadow .18s ease, border-color .15s ease",
         opacity: isDisabled ? 0.55 : 1,
         filter: isDisabled ? "grayscale(0.6)" : "none",
@@ -871,7 +871,7 @@ const Connectors = ({ nodes, edges, ghost }) => {
 const EdgePlus = ({ x, y, onClick, withConnector=false }) => (
   <div data-testid={withConnector ? "append-plus" : "edge-plus"} onClick={onClick} style={{ position:"absolute", left:x, top:y, transform:"translate(-50%,-50%)", zIndex:8, cursor:"pointer" }}>
     <div
-      onMouseEnter={(e)=>{ const d=e.currentTarget; d.style.borderColor=C.brand; d.style.color=C.brand; d.style.background=C.brandBg; d.style.transform="scale(1.12)"; d.style.boxShadow="0 4px 12px rgba(226,38,53,.22)"; }}
+      onMouseEnter={(e)=>{ const d=e.currentTarget; d.style.borderColor=C.brand; d.style.color=C.brand; d.style.background=C.brandBg; d.style.transform="scale(1.12)"; d.style.boxShadow="0 4px 12px rgba(15,168,224,.22)"; }}
       onMouseLeave={(e)=>{ const d=e.currentTarget; d.style.borderColor="rgba(0,0,0,.18)"; d.style.color=C.text4; d.style.background=C.cardBg; d.style.transform="scale(1)"; d.style.boxShadow="0 1px 4px rgba(0,0,0,.10)"; }}
       style={{ width:24, height:24, borderRadius:7, background:C.cardBg, border:`1.5px solid rgba(0,0,0,.18)`, color:C.text4, display:"flex", alignItems:"center", justifyContent:"center", fontSize:16, fontWeight:700, boxShadow:"0 1px 4px rgba(0,0,0,.10)", transition:"all .15s", lineHeight:1 }}>
       {IC.plus(14)}
@@ -4480,8 +4480,8 @@ const AutomationBuilderView = ({ automation, onBack, onSave, onToggleStatus, act
           font-style: italic;
         }
         .rename-input:focus {
-          border-color: rgba(226,38,53,.72) !important;
-          box-shadow: 0 0 0 3px rgba(226,38,53,.18) !important;
+          border-color: rgba(15,168,224,.72) !important;
+          box-shadow: 0 0 0 3px rgba(15,168,224,.18) !important;
         }
         ::-webkit-scrollbar { width: 5px; height: 5px; }
         ::-webkit-scrollbar-track { background: transparent; }

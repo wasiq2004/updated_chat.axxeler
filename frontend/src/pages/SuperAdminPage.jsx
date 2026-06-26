@@ -265,7 +265,7 @@ function BrandingTab() {
           <Field label="Brand name" block><input value={f.brandName} onChange={e => upd('brandName', e.target.value)} style={{ ...inputStyle, width: '100%' }} /></Field>
           <Field label="Accent color (#RRGGBB)" block>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <input value={f.primaryColor} onChange={e => upd('primaryColor', e.target.value)} placeholder="#E22635" style={{ ...inputStyle, flex: 1 }} />
+              <input value={f.primaryColor} onChange={e => upd('primaryColor', e.target.value)} placeholder="var(--c-primary)" style={{ ...inputStyle, flex: 1 }} />
               <span style={{ width: 34, height: 34, borderRadius: 8, border: `1px solid ${C.border}`, background: /^#[0-9a-fA-F]{6}$/.test(f.primaryColor) ? f.primaryColor : '#fff' }} />
             </div>
           </Field>

@@ -108,7 +108,7 @@ export default function NumberSidebar({ selectedNumber, onSelectNumber, onCollap
                 border: 'none',
                 borderBottom: `1px solid ${C.border}`,
                 cursor: 'pointer',
-                background: isActive ? 'rgba(226,38,53,.12)' : 'transparent',
+                background: isActive ? 'rgba(15,168,224,.12)' : 'transparent',
                 fontFamily: FONT,
                 textAlign: 'left',
                 transition: 'background .16s ease, transform .16s ease',
@@ -128,7 +128,7 @@ export default function NumberSidebar({ selectedNumber, onSelectNumber, onCollap
               {/* Avatar */}
               <div style={{
                 width: 44, height: 44, borderRadius: '50%',
-                background: hasPicture ? 'transparent' : (isActive ? 'linear-gradient(135deg, #E22635, #FF4D5A)' : 'rgba(0,0,0,.08)'),
+                background: hasPicture ? 'transparent' : (isActive ? 'linear-gradient(135deg, var(--c-primary), var(--c-primaryHover))' : 'rgba(0,0,0,.08)'),
                 color: isActive ? '#fff' : C.textSecondary,
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 fontSize: 14, fontWeight: 700, flexShrink: 0,

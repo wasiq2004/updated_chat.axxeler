@@ -794,7 +794,7 @@ function Pill({ active, onClick, children }) {
       style={{
         padding: '8px 14px', borderRadius: 8, cursor: 'pointer',
         border: `1.5px solid ${active ? C.primary : C.border}`,
-        background: active ? 'rgba(226,38,53,.14)' : C.cardBg,
+        background: active ? 'rgba(15,168,224,.14)' : C.cardBg,
         color: active ? C.primary : C.text,
         fontSize: 13, fontFamily: FONT, fontWeight: active ? 700 : 500,
       }}>
@@ -817,7 +817,7 @@ function ActionBar({ isCreate, saving, onSave, onCancel, onDelete }) {
             marginRight: 'auto',
             display: 'flex', alignItems: 'center', gap: 6,
             padding: '10px 14px', borderRadius: 8,
-            border: '1px solid rgba(226,38,53,.40)', background: C.cardBg,
+            border: '1px solid rgba(15,168,224,.40)', background: C.cardBg,
             color: C.primary, fontSize: 13, fontFamily: FONT, fontWeight: 600,
             cursor: 'pointer',
           }}>

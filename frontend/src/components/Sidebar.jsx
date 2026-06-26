@@ -60,7 +60,7 @@ export default function Sidebar({ activePage, onPageChange, collapsed, setCollap
                 borderRadius: 12,
                 cursor: 'pointer',
                 marginBottom: 2,
-                background: active ? 'linear-gradient(135deg, rgba(226,38,53,.98), rgba(255,77,90,.92))' : 'transparent',
+                background: active ? 'linear-gradient(135deg, rgba(15,168,224,.98), rgba(255,77,90,.92))' : 'transparent',
                 color: active ? '#fff' : C.text,
                 justifyContent: collapsed ? 'center' : 'flex-start',
                 fontFamily: FONT,
@@ -70,7 +70,7 @@ export default function Sidebar({ activePage, onPageChange, collapsed, setCollap
                 overflow: 'hidden',
                 userSelect: 'none',
                 transition: 'background 0.15s ease, color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease',
-                boxShadow: active ? '0 12px 28px rgba(226,38,53,.28)' : 'none',
+                boxShadow: active ? '0 12px 28px rgba(15,168,224,.28)' : 'none',
                 animation: `fadeInLeft 0.28s ease-out ${i * 30}ms both`,
               }}
               onMouseEnter={e => {
@@ -80,7 +80,7 @@ export default function Sidebar({ activePage, onPageChange, collapsed, setCollap
                 }
               }}
               onMouseLeave={e => {
-                e.currentTarget.style.background = active ? 'linear-gradient(135deg, rgba(226,38,53,.98), rgba(255,77,90,.92))' : 'transparent';
+                e.currentTarget.style.background = active ? 'linear-gradient(135deg, rgba(15,168,224,.98), rgba(255,77,90,.92))' : 'transparent';
                 e.currentTarget.style.transform = 'none';
               }}
             >

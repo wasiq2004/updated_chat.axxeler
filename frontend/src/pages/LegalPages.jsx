@@ -21,8 +21,8 @@ const L = {
   text: '#FFFFFF',
   textSec: '#B4B4BE',
   textMute: '#6E6E78',
-  red: '#E22635',
-  redHi: '#FF4D5A',
+  red: 'var(--c-primary)',
+  redHi: 'var(--c-primaryHover)',
 };
 
 // ── Company / product constants (edit here to update both pages) ──────────

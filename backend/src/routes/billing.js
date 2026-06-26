@@ -32,10 +32,30 @@ router.get('/billing/entitlements', async (req, res) => {
       'SELECT key, name, description FROM coexistence.features ORDER BY key'
     );
 
-    // Super admins (no tenant) get everything — they operate the platform.
+    // Super admins + reseller (partner) admins have no tenant. They get all
+    // features; a reseller admin additionally gets THEIR OWN partner branding so
+    // their console is never shown under our name.
     if (req.isSuperAdmin || req.tenantId == null) {
+      let branding = null;
+      if (!req.isSuperAdmin && req.resellerId != null) {
+        const { rows: rRows } = await pool.query(
+          `SELECT name, branding FROM coexistence.resellers WHERE id = $1 AND deleted_at IS NULL`,
+          [req.resellerId]
+        );
+        if (rRows.length) {
+          const b = rRows[0].branding || {};
+          branding = {
+            // Fall back to the partner's NAME (never our "Zen Chat") until they set one.
+            brandName: (typeof b.brandName === 'string' && b.brandName) ? b.brandName : rRows[0].name,
+            primaryColor: /^#[0-9a-fA-F]{6}$/.test(b.primaryColor || '') ? b.primaryColor : null,
+            logoUrl: (typeof b.logoUrl === 'string' && b.logoUrl) ? b.logoUrl : null,
+            isCustom: true,
+          };
+        }
+      }
       return res.json({
         isSuperAdmin: !!req.isSuperAdmin,
+        branding,
         plan: null,
         status: null,
         features: allFeatures.map(f => f.key), // treat as all-access
@@ -53,12 +73,20 @@ router.get('/billing/entitlements', async (req, res) => {
     // branding is the platform identity the user sees — it takes precedence over
     // the tenant's own branding.
     const { rows: rbRows } = await pool.query(
-      `SELECT r.branding FROM coexistence.resellers r
+      `SELECT r.branding, r.name FROM coexistence.resellers r
          JOIN coexistence.tenants t ON t.reseller_id = r.id
         WHERE t.id = $1 AND r.status = 'active' AND r.deleted_at IS NULL`,
       [req.tenantId]
     );
+    const fromReseller = rbRows.length > 0;
     const branding = rbRows[0]?.branding || tRows[0]?.branding || {};
+    // A partner-scoped tenant (or a tenant that set its own brand) must never show
+    // OUR "Zen Chat" identity: fall back to the partner's name and mark it custom
+    // so the frontend renders the name instead of our default logo.
+    const resolvedBrandName = (typeof branding.brandName === 'string' && branding.brandName)
+      ? branding.brandName
+      : (fromReseller ? (rbRows[0].name || null) : null);
+    const isCustomBrand = fromReseller || !!resolvedBrandName;
     const [users, orgs, contacts] = await Promise.all([
       checkLimit(req.tenantId, 'max_users'),
       checkLimit(req.tenantId, 'max_organizations'),
@@ -69,9 +97,10 @@ router.get('/billing/entitlements', async (req, res) => {
       isSuperAdmin: false,
       tenantName: tRows[0]?.name || null,
       branding: {
-        brandName: typeof branding.brandName === 'string' ? branding.brandName : null,
+        brandName: resolvedBrandName,
         primaryColor: /^#[0-9a-fA-F]{6}$/.test(branding.primaryColor || '') ? branding.primaryColor : null,
         logoUrl: typeof branding.logoUrl === 'string' ? branding.logoUrl : null,
+        isCustom: isCustomBrand,
       },
       // When the tenant is under a white-label reseller, the reseller's branding
       // wins — so the tenant's own BrandingPage is read-only / hidden.

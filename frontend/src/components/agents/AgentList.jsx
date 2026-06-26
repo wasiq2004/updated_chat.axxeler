@@ -48,7 +48,7 @@ function Row({ agent, waAccounts, onEdit }) {
     >
       <div style={{
         width: 36, height: 36, borderRadius: 10,
-        background: agent.isActive ? 'rgba(226,38,53,.14)' : 'rgba(0,0,0,.06)',
+        background: agent.isActive ? 'rgba(15,168,224,.14)' : 'rgba(0,0,0,.06)',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         flexShrink: 0,
       }}>
@@ -120,7 +120,7 @@ function EmptyState({ onCreate }) {
     }}>
       <div style={{
         width: 56, height: 56, borderRadius: 14, margin: '0 auto 16px',
-        background: 'rgba(226,38,53,.14)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: 'rgba(15,168,224,.14)', display: 'flex', alignItems: 'center', justifyContent: 'center',
       }}>
         <Bot size={28} color={C.primary} />
       </div>

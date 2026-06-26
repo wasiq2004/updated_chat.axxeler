@@ -7,7 +7,7 @@ import { Palette, Check, RotateCcw, MessageCircle, Megaphone, Users } from 'luci
 import { api } from '../api.js';
 import { C, FONT } from '../constants.js';
 
-const SWATCHES = ['#E22635', '#2563EB', '#7C3AED', '#059669', '#EA580C', '#0891B2', '#DB2777', '#475569'];
+const SWATCHES = ['#0FA8E0', '#F6B100', '#2563EB', '#7C3AED', '#059669', '#EA580C', '#0891B2', '#DB2777'];
 
 export default function BrandingPage({ onSaved, managedByReseller }) {
   const [form, setForm] = useState({ brandName: '', primaryColor: '', logoUrl: '' });
@@ -23,7 +23,7 @@ export default function BrandingPage({ onSaved, managedByReseller }) {
       .finally(() => setLoaded(true));
   }, []);
 
-  const accent = /^#[0-9a-fA-F]{6}$/.test(form.primaryColor) ? form.primaryColor : C.primary;
+  const accent = /^#[0-9a-fA-F]{6}$/.test(form.primaryColor) ? form.primaryColor : '#0FA8E0';
   const set = (k, v) => { setForm(f => ({ ...f, [k]: v })); setSaved(false); };
 
   async function save() {
@@ -78,7 +78,7 @@ export default function BrandingPage({ onSaved, managedByReseller }) {
               <input type="color" value={accent} onChange={e => set('primaryColor', e.target.value)}
                 style={{ width: 42, height: 38, borderRadius: 9, border: `1px solid ${C.border}`, background: 'none', cursor: 'pointer', padding: 2 }} />
               <input value={form.primaryColor} onChange={e => set('primaryColor', e.target.value)}
-                placeholder="#E22635" style={{ ...inp, width: 120, fontFamily: 'monospace' }} />
+                placeholder="#0FA8E0" style={{ ...inp, width: 120, fontFamily: 'monospace' }} />
               <div style={{ display: 'flex', gap: 6 }}>
                 {SWATCHES.map(s => (
                   <button key={s} onClick={() => set('primaryColor', s)} title={s} style={{

@@ -17,7 +17,6 @@ import MediaLibraryPage from './pages/MediaLibraryPage.jsx';
 import AboutUsPage from './pages/AboutUsPage.jsx';
 import PipelinesPage from './pages/PipelinesPage.jsx';
 import AiAgentBuilderPage from './pages/AiAgentBuilderPage.jsx';
-import LandingPage from './pages/LandingPage.jsx';
 import { PrivacyPolicyPage, TermsPage } from './pages/LegalPages.jsx';
 import SuperAdminPage from './pages/SuperAdminPage.jsx';
 import BillingPage from './pages/BillingPage.jsx';
@@ -43,6 +42,19 @@ export default function App() {
   const [setupRequired, setSetupRequired] = useState(false);
   const [routeParts, navigate, replaceRoute] = useHashRoute();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  // Light/dark theme. Initialized from the data-theme the no-flash boot script in
+  // index.html already set (saved choice or system preference).
+  const [theme, setTheme] = useState(() =>
+    (typeof document !== 'undefined' && document.documentElement.getAttribute('data-theme')) === 'dark' ? 'dark' : 'light');
+  const toggleTheme = () => {
+    setTheme(prev => {
+      const next = prev === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', next);
+      document.documentElement.style.colorScheme = next;
+      try { localStorage.setItem('zc-theme', next); } catch { /* ignore */ }
+      return next;
+    });
+  };
 
   const page = VALID_PAGES.has(routeParts[0]) ? routeParts[0] : 'home';
   const subParts = routeParts.slice(1);
@@ -108,7 +120,7 @@ export default function App() {
 
   // Apply white-label branding (accent color) from the tenant's plan. Overrides
   // the CSS theme variable so buttons/highlights re-skin instantly; cleared when
-  // there's no custom color so the default red returns.
+  // there's no custom color so the default brand cyan returns.
   useEffect(() => {
     const root = document.documentElement;
     const color = entitlements?.branding?.primaryColor;
@@ -179,7 +191,7 @@ export default function App() {
       }}>
         <span style={{
           display: 'inline-block', width: 28, height: 28,
-          border: `3px solid ${C.border}`, borderTopColor: '#E22635',
+          border: `3px solid ${C.border}`, borderTopColor: 'var(--c-primary)',
           borderRadius: '50%', animation: 'spin 0.75s linear infinite',
         }} />
         <div style={{ fontSize: 12, color: C.textSecondary, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase' }}>Loading...</div>
@@ -192,17 +204,13 @@ export default function App() {
   }
 
   if (!user) {
-    // Public marketing site for logged-out visitors. The landing page is the
-    // default; the login form lives at #/login (reached via the top-bar button).
-    if (routeParts[0] === 'login') {
-      return (
-        <LoginGate
-          onLogin={(u) => { setUser(u); navigate('home'); }}
-          onBack={() => navigate('home')}
-        />
-      );
-    }
-    return <LandingPage onLogin={() => navigate('login')} />;
+    // No marketing landing page — logged-out visitors go straight to the login
+    // screen (which auto-themes for a partner via the ?w=<slug> param).
+    return (
+      <LoginGate
+        onLogin={(u) => { setUser(u); navigate('home'); }}
+      />
+    );
   }
 
   const renderPage = () => {
@@ -282,6 +290,8 @@ export default function App() {
         activeOrg={activeOrg}
         onOrgChange={changeOrg}
         branding={entitlements?.branding}
+        theme={theme}
+        onToggleTheme={toggleTheme}
       />
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         {page !== 'admin-settings' && page !== 'super-admin' && (

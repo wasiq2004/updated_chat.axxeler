@@ -84,7 +84,7 @@ function KpiCard({ tile, onSelect }) {
           {tile.tooltip && <InfoIcon text={tile.tooltip} />}
         </div>
         <span style={{
-          width: 28, height: 28, borderRadius: 10, background: 'rgba(226,38,53,.12)',
+          width: 28, height: 28, borderRadius: 10, background: 'rgba(15,168,224,.12)',
           display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
         }}>
           <Icon size={15} strokeWidth={2.2} style={{ color: C.primary }} />
@@ -324,7 +324,7 @@ export default function HomePage({ user, onPageChange }) {
                 <button key={r.key} onClick={() => setRange(r.key)} style={{
                   border: 'none', cursor: 'pointer', fontFamily: FONT, fontSize: 12, fontWeight: 600,
                   padding: '5px 11px', borderRadius: 7,
-                  background: active ? 'linear-gradient(135deg, #E22635, #FF4D5A)' : 'transparent', color: active ? '#fff' : C.textSecondary,
+                  background: active ? 'linear-gradient(135deg, var(--c-primary), var(--c-primaryHover))' : 'transparent', color: active ? '#fff' : C.textSecondary,
                   transition: 'background .15s',
                 }}>{r.label}</button>
               );
@@ -336,7 +336,7 @@ export default function HomePage({ user, onPageChange }) {
               display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontFamily: FONT,
               fontSize: 12.5, fontWeight: 600, padding: '7px 12px', borderRadius: 9,
               border: a.primary ? 'none' : `1px solid ${C.border}`,
-              background: a.primary ? 'linear-gradient(135deg, #E22635, #FF4D5A)' : C.cardBg,
+              background: a.primary ? 'linear-gradient(135deg, var(--c-primary), var(--c-primaryHover))' : C.cardBg,
               color: a.primary ? '#fff' : C.text,
             }}>
               <a.icon size={14} strokeWidth={2.3} />{a.label}

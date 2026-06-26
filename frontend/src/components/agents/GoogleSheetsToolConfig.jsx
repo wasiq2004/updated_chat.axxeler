@@ -285,7 +285,7 @@ export default function GoogleSheetsToolConfig({ agentId, existingTool, onCancel
               display: 'flex', alignItems: 'flex-start', gap: 10,
               padding: '10px 12px', borderRadius: 8,
               border: ops.includes(o.key) ? `1.5px solid ${C.primary}` : `1px solid ${C.border}`,
-              background: ops.includes(o.key) ? 'rgba(226,38,53,.14)' : C.cardBg,
+              background: ops.includes(o.key) ? 'rgba(15,168,224,.14)' : C.cardBg,
               cursor: 'pointer',
             }}>
               <input type="checkbox" checked={ops.includes(o.key)} onChange={() => toggleOp(o.key)}
