@@ -109,7 +109,7 @@ function KpiCard({ tile, onSelect }) {
           <span style={{
             display: 'inline-flex', alignItems: 'center', gap: 2,
             fontSize: 11.5, fontWeight: 700, fontFamily: MONO,
-            color: up ? C.green : C.primary,
+            color: up ? C.green : C.error,
           }}>
             {up ? <ArrowUpRight size={13} strokeWidth={2.5} /> : <ArrowDownRight size={13} strokeWidth={2.5} />}
             {Math.abs(tile.delta)}%
@@ -180,7 +180,7 @@ function KpiDetailModal({ tile, range, onClose }) {
               {it.meta && (
                 <div style={{
                   fontSize: 11.5, fontFamily: MONO, flexShrink: 0,
-                  color: it.meta === 'No reply' ? C.primary : it.meta === 'Replied' || it.meta === 'active' ? C.green : C.textSecondary,
+                  color: it.meta === 'No reply' ? C.error : it.meta === 'Replied' || it.meta === 'active' ? C.green : C.textSecondary,
                   fontWeight: it.meta === 'No reply' || it.meta === 'active' ? 700 : 500,
                 }}>{it.meta}</div>
               )}
@@ -309,7 +309,12 @@ export default function HomePage({ user, onPageChange }) {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 20, flexWrap: 'wrap', gap: 14 }}>
         <div>
           <h1 style={{ fontSize: 27, fontWeight: 800, color: C.text, margin: 0, letterSpacing: '-.03em', fontFamily: FONT }}>
-            Welcome back, {greeting}
+            Welcome back,{' '}
+            <span style={{
+              background: 'var(--c-brandGradient, linear-gradient(120deg,#0FA8E0,#2BC4E8 48%,#F6B100 125%))',
+              WebkitBackgroundClip: 'text', backgroundClip: 'text',
+              WebkitTextFillColor: 'transparent', color: 'transparent',
+            }}>{greeting}</span>
           </h1>
           <p style={{ fontSize: 13, color: C.textSecondary, margin: '6px 0 0', fontFamily: FONT, letterSpacing: '-.005em' }}>
             {isAdmin ? 'Org-wide overview' : 'Your activity overview'} · last {RANGES.find(r => r.key === range)?.label}
@@ -376,10 +381,10 @@ export default function HomePage({ user, onPageChange }) {
                     display: 'inline-flex', alignItems: 'center', gap: 7, cursor: 'pointer', fontFamily: FONT,
                     fontSize: 12.5, fontWeight: 600, padding: '7px 12px', borderRadius: 9,
                     border: `1px solid ${warn ? 'rgba(239,68,68,.24)' : C.border}`,
-                    background: warn ? C.primaryLight : C.cardBg,
-                    color: warn ? '#DC2626' : C.textSecondary,
+                    background: warn ? 'rgba(239,68,68,.10)' : C.cardBg,
+                    color: warn ? C.error : C.textSecondary,
                   }}>
-                    <AlertTriangle size={13} strokeWidth={2.4} style={{ color: warn ? C.primary : C.textMuted }} />
+                    <AlertTriangle size={13} strokeWidth={2.4} style={{ color: warn ? C.error : C.textMuted }} />
                     {al.label}
                     <span style={{ fontFamily: MONO, fontWeight: 700 }}>{fmt(al.count)}</span>
                   </button>
@@ -423,7 +428,7 @@ export default function HomePage({ user, onPageChange }) {
                     <AutomationStat label={`runs · ${range}`} value={fmt(data.automations.runs.total)} />
                     <AutomationStat label="success" value={data.automations.successRate == null ? '—' : `${data.automations.successRate}%`} color={C.green} />
                     <AutomationStat label="waiting" value={fmt(data.automations.runs.paused)} color={C.amber} />
-                    <AutomationStat label="errors" value={fmt(data.automations.runs.error)} color={data.automations.runs.error > 0 ? C.primary : C.text} />
+                    <AutomationStat label="errors" value={fmt(data.automations.runs.error)} color={data.automations.runs.error > 0 ? C.error : C.text} />
                   </div>
                 </Card>
               )}
@@ -445,7 +450,7 @@ export default function HomePage({ user, onPageChange }) {
                           <div style={{ textAlign: 'right', fontFamily: MONO, fontSize: 12 }}>
                             <span style={{ color: C.green, fontWeight: 600 }}>{fmt(b.sent)}</span>
                             <span style={{ color: C.textMuted }}> / {fmt(b.recipients)}</span>
-                            {b.failed > 0 && <span style={{ color: C.primary, fontWeight: 600 }}> · {fmt(b.failed)}✕</span>}
+                            {b.failed > 0 && <span style={{ color: C.error, fontWeight: 600 }}> · {fmt(b.failed)}✕</span>}
                           </div>
                         </div>
                       ))}

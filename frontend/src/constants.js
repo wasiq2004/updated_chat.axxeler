@@ -23,6 +23,7 @@ export const C = {
   purple: 'var(--c-purple, #9D7CFF)',
   green: 'var(--c-green, #22C55E)',
   amber: 'var(--c-amber, #F6B100)',
+  error: 'var(--c-error, #DC2626)',
   // Brand gradients (ZenAutomation cyan → amber). Use for hero/CTA surfaces.
   primaryGradient: 'var(--c-primaryGradient, linear-gradient(135deg, #0FA8E0 0%, #38CDF0 100%))',
   brandGradient: 'var(--c-brandGradient, linear-gradient(120deg, #0FA8E0 0%, #2BC4E8 48%, #F6B100 125%))',

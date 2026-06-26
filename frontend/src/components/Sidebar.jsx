@@ -6,25 +6,31 @@ import {
 import { C, FONT } from '../constants.js';
 import { canAccessPage } from '../lib/plans.js';
 
-const NAV_ITEMS = [
-  { id: 'home',              label: 'Home',             Icon: Home },
-  { id: 'chatbot-builder',   label: 'Automations',      Icon: Zap },
-  { id: 'ai-agent-builder',  label: 'AI Agents',        Icon: Bot },
-  { id: 'template-builder',  label: 'Template Builder', Icon: LayoutTemplate },
-  { id: 'media-library',     label: 'Media',            Icon: ImageIcon },
-  { id: 'chats',             label: 'Chats',            Icon: MessageCircle },
-  { id: 'contacts',          label: 'Contacts',         Icon: Users },
-  { id: 'pipelines',         label: 'Pipelines',        Icon: KanbanSquare },
-  { id: 'bulk-message',      label: 'Bulk Message',     Icon: Megaphone },
-  { id: 'billing',           label: 'Plan',             Icon: CreditCard },
-  { id: 'about',             label: 'About Us',         Icon: Info },
+// Grouped so the nav reads as logical sections (labels show when expanded). Order
+// within each group is preserved from the original flat list.
+const NAV_GROUPS = [
+  { title: 'Overview', items: [
+    { id: 'home', label: 'Home', Icon: Home },
+  ] },
+  { title: 'Engage', items: [
+    { id: 'chats',    label: 'Chats',    Icon: MessageCircle },
+    { id: 'contacts', label: 'Contacts', Icon: Users },
+    { id: 'pipelines', label: 'Pipelines', Icon: KanbanSquare },
+  ] },
+  { title: 'Build', items: [
+    { id: 'chatbot-builder',  label: 'Automations',      Icon: Zap },
+    { id: 'ai-agent-builder', label: 'AI Agents',        Icon: Bot },
+    { id: 'template-builder', label: 'Template Builder', Icon: LayoutTemplate },
+    { id: 'media-library',    label: 'Media',            Icon: ImageIcon },
+    { id: 'bulk-message',     label: 'Bulk Message',     Icon: Megaphone },
+  ] },
+  { title: 'Account', items: [
+    { id: 'billing', label: 'Plan',      Icon: CreditCard },
+    { id: 'about',   label: 'About Us',  Icon: Info },
+  ] },
 ];
 
 export default function Sidebar({ activePage, onPageChange, collapsed, setCollapsed, user, entitlements }) {
-  const visibleItems = (user?.role === 'admin' || !Array.isArray(user?.pages))
-    ? NAV_ITEMS
-    : NAV_ITEMS.filter(item => user.pages.includes(item.id));
-
   return (
     <div style={{
       width: collapsed ? 68 : 224,
@@ -42,74 +48,83 @@ export default function Sidebar({ activePage, onPageChange, collapsed, setCollap
       animation: 'fadeInLeft 0.35s cubic-bezier(0.16,1,0.3,1) both',
       boxShadow: '18px 0 48px rgba(0,0,0,.26)',
     }}>
-      {/* Nav items */}
-      <div style={{ padding: collapsed ? '10px 8px' : '14px 10px', flex: 1 }}>
-        {visibleItems.map((item, i) => {
-          const active = activePage === item.id;
-          const locked = !canAccessPage(entitlements, item.id);
+      {/* Nav items — grouped with section labels */}
+      <div style={{ padding: collapsed ? '10px 6px' : '12px 10px', flex: 1, overflowY: 'auto' }}>
+        {NAV_GROUPS.map((group, gi) => {
+          const items = (user?.role === 'admin' || !Array.isArray(user?.pages))
+            ? group.items
+            : group.items.filter(item => user.pages.includes(item.id));
+          if (items.length === 0) return null;
           return (
-            <div
-              key={item.id}
-              onClick={() => onPageChange(item.id)}
-              title={collapsed ? item.label : ''}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: collapsed ? 0 : 11,
-                padding: collapsed ? '11px 0' : '10px 12px',
-                borderRadius: 12,
-                cursor: 'pointer',
-                marginBottom: 2,
-                background: active ? 'linear-gradient(135deg, rgba(15,168,224,.98), rgba(255,77,90,.92))' : 'transparent',
-                color: active ? '#fff' : C.text,
-                justifyContent: collapsed ? 'center' : 'flex-start',
-                fontFamily: FONT,
-                fontSize: 13,
-                fontWeight: active ? 700 : 500,
-                whiteSpace: 'nowrap',
-                overflow: 'hidden',
-                userSelect: 'none',
-                transition: 'background 0.15s ease, color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease',
-                boxShadow: active ? '0 12px 28px rgba(15,168,224,.28)' : 'none',
-                animation: `fadeInLeft 0.28s ease-out ${i * 30}ms both`,
-              }}
-              onMouseEnter={e => {
-                if (!active) {
-                  e.currentTarget.style.background = 'rgba(0,0,0,.065)';
-                  e.currentTarget.style.transform = 'translateX(2px)';
-                }
-              }}
-              onMouseLeave={e => {
-                e.currentTarget.style.background = active ? 'linear-gradient(135deg, rgba(15,168,224,.98), rgba(255,77,90,.92))' : 'transparent';
-                e.currentTarget.style.transform = 'none';
-              }}
-            >
-              <span style={{
-                width: 20,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                flexShrink: 0,
-                opacity: active ? 1 : 0.7,
-                transition: 'opacity 0.15s ease, transform 0.15s ease',
-              }}>
-                <item.Icon size={16} />
-              </span>
-              {!collapsed && (
-                <span style={{
-                  flex: 1,
-                  letterSpacing: '-0.01em',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  transition: 'opacity 0.2s ease',
-                  opacity: locked && !active ? 0.6 : 1,
-                }}>
-                  {item.label}
-                </span>
-              )}
-              {!collapsed && locked && (
-                <Lock size={12} strokeWidth={2.5} style={{ flexShrink: 0, color: active ? '#fff' : C.textMuted, opacity: 0.85 }} />
-              )}
+            <div key={group.title} style={{ marginBottom: collapsed ? 4 : 10 }}>
+              {!collapsed ? (
+                <div style={{
+                  fontSize: 10, fontWeight: 800, letterSpacing: '.11em', textTransform: 'uppercase',
+                  color: C.textMuted, padding: '6px 12px 5px', opacity: 0.8,
+                }}>{group.title}</div>
+              ) : gi > 0 ? (
+                <div style={{ height: 1, background: C.sidebarBorder, margin: '5px 12px' }} />
+              ) : null}
+              {items.map((item) => {
+                const active = activePage === item.id;
+                const locked = !canAccessPage(entitlements, item.id);
+                return (
+                  <div
+                    key={item.id}
+                    onClick={() => onPageChange(item.id)}
+                    title={collapsed ? item.label : ''}
+                    style={{
+                      position: 'relative',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: collapsed ? 0 : 11,
+                      padding: collapsed ? '11px 0' : '10px 12px',
+                      borderRadius: 11,
+                      cursor: 'pointer',
+                      marginBottom: 2,
+                      background: active ? 'var(--c-primaryGradient, linear-gradient(135deg,#0FA8E0,#38CDF0))' : 'transparent',
+                      color: active ? '#fff' : C.text,
+                      justifyContent: collapsed ? 'center' : 'flex-start',
+                      fontFamily: FONT,
+                      fontSize: 13,
+                      fontWeight: active ? 700 : 500,
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      userSelect: 'none',
+                      transition: 'background .16s ease, color .16s ease, transform .16s ease, box-shadow .16s ease',
+                      boxShadow: active ? 'inset 3px 0 0 var(--c-amber, #F6B100), 0 10px 26px rgba(15,168,224,.30)' : 'none',
+                    }}
+                    onMouseEnter={e => {
+                      if (!active) {
+                        e.currentTarget.style.background = 'var(--c-hover)';
+                        e.currentTarget.style.transform = 'translateX(2px)';
+                      }
+                    }}
+                    onMouseLeave={e => {
+                      e.currentTarget.style.background = active ? 'var(--c-primaryGradient, linear-gradient(135deg,#0FA8E0,#38CDF0))' : 'transparent';
+                      e.currentTarget.style.transform = 'none';
+                    }}
+                  >
+                    <span style={{
+                      width: 20, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      flexShrink: 0, opacity: active ? 1 : 0.72, transition: 'opacity .15s ease',
+                    }}>
+                      <item.Icon size={16} strokeWidth={active ? 2.4 : 2} />
+                    </span>
+                    {!collapsed && (
+                      <span style={{
+                        flex: 1, letterSpacing: '-0.01em', overflow: 'hidden', textOverflow: 'ellipsis',
+                        opacity: locked && !active ? 0.6 : 1,
+                      }}>
+                        {item.label}
+                      </span>
+                    )}
+                    {!collapsed && locked && (
+                      <Lock size={12} strokeWidth={2.5} style={{ flexShrink: 0, color: active ? '#fff' : C.textMuted, opacity: 0.85 }} />
+                    )}
+                  </div>
+                );
+              })}
             </div>
           );
         })}
@@ -127,7 +142,7 @@ export default function Sidebar({ activePage, onPageChange, collapsed, setCollap
             transition: 'background 0.15s ease',
             borderRadius: 0,
           }}
-          onMouseEnter={e => e.currentTarget.style.background = 'rgba(0,0,0,.06)'}
+          onMouseEnter={e => e.currentTarget.style.background = 'var(--c-hover)'}
           onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
           title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
         >
