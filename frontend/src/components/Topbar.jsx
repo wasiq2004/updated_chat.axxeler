@@ -142,7 +142,7 @@ export default function Topbar({ user, onLogout, onNavigate, orgs, activeOrg, on
           </button>
         )}
 
-        {/* About Us */}
+        {/* About Us — hidden
         <button
           onClick={() => onNavigate('about')}
           title="About Us"
@@ -156,6 +156,7 @@ export default function Topbar({ user, onLogout, onNavigate, orgs, activeOrg, on
         >
           <Info size={16} color={C.headerText} />
         </button>
+        */}
 
         {/* User avatar */}
         <div ref={ref} style={{ position: 'relative' }}>

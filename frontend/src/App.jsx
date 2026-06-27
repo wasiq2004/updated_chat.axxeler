@@ -14,7 +14,7 @@ import ContactsPage from './pages/ContactsPage.jsx';
 import BulkMessagePage from './pages/BulkMessagePage.jsx';
 import AdminSettingsPage from './pages/AdminSettingsPage.jsx';
 import MediaLibraryPage from './pages/MediaLibraryPage.jsx';
-import AboutUsPage from './pages/AboutUsPage.jsx';
+// import AboutUsPage from './pages/AboutUsPage.jsx';  // About Us hidden
 import PipelinesPage from './pages/PipelinesPage.jsx';
 import AiAgentBuilderPage from './pages/AiAgentBuilderPage.jsx';
 import { PrivacyPolicyPage, TermsPage } from './pages/LegalPages.jsx';
@@ -29,7 +29,7 @@ import { canAccessPage } from './lib/plans.js';
 
 const VALID_PAGES = new Set([
   'home', 'chatbot-builder', 'template-builder', 'chats',
-  'contacts', 'pipelines', 'bulk-message', 'admin-settings', 'media-library', 'about',
+  'contacts', 'pipelines', 'bulk-message', 'admin-settings', 'media-library',
   'ai-agent-builder', 'super-admin', 'billing', 'organizations', 'branding', 'audit',
 ]);
 
@@ -236,7 +236,7 @@ export default function App() {
       case 'bulk-message': return <BulkMessagePage onNavigate={navigate} />;
       case 'chatbot-builder': return <ChatbotBuilderPage subParts={subParts} navigate={navigate} />;
       case 'ai-agent-builder': return <AiAgentBuilderPage user={user} navigate={navigate} />;
-      case 'about': return <AboutUsPage />;
+      // case 'about': return <AboutUsPage />;  // About Us hidden
       case 'billing': return <BillingPage entitlements={entitlements} />;
       case 'organizations': return <OrganizationsPage onOrgsChanged={loadOrgs} activeOrg={activeOrg} />;
       case 'branding': return <BrandingPage onSaved={loadEntitlements} managedByReseller={entitlements?.brandingManagedByReseller} />;

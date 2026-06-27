@@ -26,11 +26,11 @@ const L = {
 };
 
 // ── Company / product constants (edit here to update both pages) ──────────
-const COMPANY = 'ProITBridge';
+const COMPANY = 'Zen Automation';
 const PRODUCT = 'Zen Chat';
 const SITE = 'chat.axxeler.in';
-const WEBSITE = 'https://proitbridge.com';
-const EMAIL = 'rnd.proitbridge@gmail.com';
+const WEBSITE = 'https://chat.axxeler.in';
+const EMAIL = '[contact email]'; // TODO: set a real support mailbox before launch
 const UPDATED = 'June 24, 2026';
 
 function LegalLayout({ title, intro, sections, otherLabel, otherHref }) {
@@ -112,7 +112,7 @@ function LegalLayout({ title, intro, sections, otherLabel, otherHref }) {
             }}
               onMouseEnter={e => (e.currentTarget.style.color = L.text)}
               onMouseLeave={e => (e.currentTarget.style.color = L.textSec)}
-            ><Globe size={14} /> proitbridge.com</a>
+            ><Globe size={14} /> chat.axxeler.in</a>
           </div>
         </div>
       </footer>
@@ -164,7 +164,7 @@ const PRIVACY_SECTIONS = [
     list: [
       'Service providers and sub processors. We use trusted vendors for hosting, infrastructure, AI processing, and integrations who process data on our behalf under appropriate confidentiality and security obligations.',
       'Meta and WhatsApp. To deliver and receive your WhatsApp messages.',
-      'Legal and safety reasons. When required by law, regulation, or legal process, or to protect the rights, property, or safety of ProITBridge, our users, or others.',
+      'Legal and safety reasons. When required by law, regulation, or legal process, or to protect the rights, property, or safety of Zen Automation, our users, or others.',
       'Business transfers. In connection with a merger, acquisition, or sale of assets, subject to this Privacy Policy.',
     ],
   },
@@ -282,7 +282,7 @@ const TERMS_SECTIONS = [
   {
     h: 'Intellectual Property',
     p: [
-      'The Service, including its software, design, and content, is owned by ProITBridge and protected by intellectual property laws. We grant you a limited, non exclusive, non transferable right to use the Service in accordance with these Terms. You may not copy, modify, or create derivative works except as permitted by law.',
+      'The Service, including its software, design, and content, is owned by Zen Automation and protected by intellectual property laws. We grant you a limited, non exclusive, non transferable right to use the Service in accordance with these Terms. You may not copy, modify, or create derivative works except as permitted by law.',
     ],
   },
   {
@@ -306,13 +306,13 @@ const TERMS_SECTIONS = [
   {
     h: 'Limitation of Liability',
     p: [
-      'To the maximum extent permitted by law, ProITBridge will not be liable for any indirect, incidental, special, consequential, or punitive damages, or for any loss of profits, data, or goodwill, arising from your use of or inability to use the Service. Our total liability for any claim relating to the Service will not exceed the amount you paid to us for the Service in the twelve months before the claim.',
+      'To the maximum extent permitted by law, Zen Automation will not be liable for any indirect, incidental, special, consequential, or punitive damages, or for any loss of profits, data, or goodwill, arising from your use of or inability to use the Service. Our total liability for any claim relating to the Service will not exceed the amount you paid to us for the Service in the twelve months before the claim.',
     ],
   },
   {
     h: 'Indemnification',
     p: [
-      'You agree to indemnify and hold ProITBridge harmless from any claims, damages, losses, and expenses arising from your use of the Service, your content, or your violation of these Terms or applicable law.',
+      'You agree to indemnify and hold Zen Automation harmless from any claims, damages, losses, and expenses arising from your use of the Service, your content, or your violation of these Terms or applicable law.',
     ],
   },
   {

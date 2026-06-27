@@ -1,6 +1,6 @@
 import {
   Home, Zap, LayoutTemplate, MessageCircle, Users,
-  Megaphone, Image as ImageIcon, Info, KanbanSquare, Bot,
+  Megaphone, Image as ImageIcon, KanbanSquare, Bot,
   ChevronLeft, ChevronRight, Lock, CreditCard,
 } from 'lucide-react';
 import { C, FONT } from '../constants.js';
@@ -26,7 +26,7 @@ const NAV_GROUPS = [
   ] },
   { title: 'Account', items: [
     { id: 'billing', label: 'Plan',      Icon: CreditCard },
-    { id: 'about',   label: 'About Us',  Icon: Info },
+    // { id: 'about',   label: 'About Us',  Icon: Info },  // hidden
   ] },
 ];
 
