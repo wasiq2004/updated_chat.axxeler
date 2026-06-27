@@ -149,7 +149,7 @@ test.describe('Automation Builder — Node Settings', () => {
   });
 
   test('trigger keyword settings', async ({ page }) => {
-    await page.locator('[data-node-id="n1"]').click();
+    await page.locator('[data-node-id="n1"]').dblclick();
     // The settings panel shows the trigger type title inside the panel body
     await expect(page.getByText('Keyword trigger').first()).toBeVisible();
 
@@ -171,7 +171,7 @@ test.describe('Automation Builder — Node Settings', () => {
     await clickNodePickerItem(page, 'WhatsApp Message');
 
     const nodes = getNodes(page);
-    await nodes.nth(1).click();
+    await nodes.nth(1).dblclick();
 
     await expect(page.getByText('WhatsApp template').first()).toBeVisible();
 
@@ -188,7 +188,7 @@ test.describe('Automation Builder — Node Settings', () => {
     await clickNodePickerItem(page, 'Condition');
 
     const nodes = getNodes(page);
-    await nodes.nth(1).click();
+    await nodes.nth(1).dblclick();
 
     await expect(page.getByText('Match mode').first()).toBeVisible();
 
@@ -207,7 +207,7 @@ test.describe('Automation Builder — Node Settings', () => {
     await clickNodePickerItem(page, 'Smart Delay');
 
     const nodes = getNodes(page);
-    await nodes.nth(1).click();
+    await nodes.nth(1).dblclick();
 
     await expect(page.getByText('Delay type').first()).toBeVisible();
 
@@ -223,7 +223,7 @@ test.describe('Automation Builder — Node Settings', () => {
     await clickNodePickerItem(page, 'Add Tag');
 
     const nodes = getNodes(page);
-    await nodes.nth(1).click();
+    await nodes.nth(1).dblclick();
 
     await expect(page.getByText('Perform following actions').first()).toBeVisible();
   });
@@ -233,7 +233,7 @@ test.describe('Automation Builder — Node Settings', () => {
     await clickNodePickerItem(page, 'Human Handoff');
 
     const nodes = getNodes(page);
-    await nodes.nth(1).click();
+    await nodes.nth(1).dblclick();
 
     await expect(page.getByText('Assignment mode').first()).toBeVisible();
     // Seed data team members
@@ -247,7 +247,7 @@ test.describe('Automation Builder — Node Settings', () => {
     await clickNodePickerItem(page, 'Trigger Another Flow');
 
     const nodes = getNodes(page);
-    await nodes.nth(1).click();
+    await nodes.nth(1).dblclick();
 
     await expect(page.getByText('Sub-flow to run').first()).toBeVisible();
     // Seed data automations
@@ -268,7 +268,7 @@ test.describe('Automation Builder — Preview Simulator', () => {
     await clickNodePickerItem(page, 'WhatsApp Message');
 
     const nodes = getNodes(page);
-    await nodes.nth(1).click();
+    await nodes.nth(1).dblclick();
     await page.locator('select').first().selectOption('101');
 
     await page.click('[data-testid="preview-toggle"]');
@@ -281,7 +281,7 @@ test.describe('Automation Builder — Preview Simulator', () => {
     await clickNodePickerItem(page, 'WhatsApp Message');
 
     const nodes = getNodes(page);
-    await nodes.nth(1).click();
+    await nodes.nth(1).dblclick();
     await page.locator('select').first().selectOption('101');
 
     await page.click('[data-testid="preview-toggle"]');
@@ -306,7 +306,7 @@ test.describe('Automation Builder — CRM Data Integration', () => {
     await clickNodePickerItem(page, 'WhatsApp Message');
 
     const nodes = getNodes(page);
-    await nodes.nth(1).click();
+    await nodes.nth(1).dblclick();
 
     const select = page.locator('select').first();
     await expect(select).toBeVisible();
@@ -320,7 +320,7 @@ test.describe('Automation Builder — CRM Data Integration', () => {
   });
 
   test('tags appear in trigger tagApplied dropdown', async ({ page }) => {
-    await page.locator('[data-node-id="n1"]').click();
+    await page.locator('[data-node-id="n1"]').dblclick();
     // Change trigger kind to Tag Applied
     await page.selectOption('select', { label: 'Tag Applied' });
 
@@ -335,7 +335,7 @@ test.describe('Automation Builder — CRM Data Integration', () => {
     await clickNodePickerItem(page, 'Human Handoff');
 
     const nodes = getNodes(page);
-    await nodes.nth(1).click();
+    await nodes.nth(1).dblclick();
 
     await expect(page.getByText('Rahul Sharma').first()).toBeVisible();
     await expect(page.getByText('Priya Iyer').first()).toBeVisible();
@@ -347,7 +347,7 @@ test.describe('Automation Builder — CRM Data Integration', () => {
     await clickNodePickerItem(page, 'Condition');
 
     const nodes = getNodes(page);
-    await nodes.nth(1).click();
+    await nodes.nth(1).dblclick();
     await page.getByText('Add condition').first().click();
 
     const fieldSelect = page.locator('select').nth(1);
@@ -362,7 +362,7 @@ test.describe('Automation Builder — CRM Data Integration', () => {
     await clickNodePickerItem(page, 'Trigger Another Flow');
 
     const nodes = getNodes(page);
-    await nodes.nth(1).click();
+    await nodes.nth(1).dblclick();
 
     await expect(page.getByText('Welcome Sub-Flow').first()).toBeVisible();
     await expect(page.getByText('Pricing Sub-Flow').first()).toBeVisible();
@@ -394,7 +394,7 @@ test.describe('Automation Builder — Edge Cases & Bugs', () => {
     await clickNodePickerItem(page, 'WhatsApp Message');
 
     const nodes = getNodes(page);
-    await nodes.nth(1).click();
+    await nodes.nth(1).dblclick();
     await page.locator('select').first().selectOption('101');
 
     await saveAutomation(page);

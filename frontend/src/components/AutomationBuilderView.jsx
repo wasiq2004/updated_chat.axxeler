@@ -666,7 +666,6 @@ const FlowNode = ({ n, selected, onSelect, onOpenDetail, onStartDrag, onStartCon
       data-testid="flow-node"
       data-node-id={n.id}
       onMouseDown={(e) => { e.stopPropagation(); onStartDrag(e, n.id); }}
-      onClick={(e) => { e.stopPropagation(); onSelect(n.id); }}
       onDoubleClick={(e) => { e.stopPropagation(); onOpenDetail && onOpenDetail(n.id); }}
       style={{
         position:"absolute", left:n.x, top:n.y, width:NODE_W, minHeight:h, background:C.cardBg,
@@ -890,12 +889,16 @@ const EdgeDelete = ({ x, y, onClick }) => (
   </div>
 );
 
-const NodeActions = ({ x, y, onDuplicate, onDelete }) => (
-  <div style={{ position:"absolute", left:x, top:y, transform:"translate(-50%,-100%)", zIndex:10, display:"flex", gap:4 }}>
-    <button onClick={(e)=>{e.stopPropagation(); onDuplicate();}} style={{ background:C.cardBg, border:`1px solid ${C.cardBorder}`, borderRadius:7, width:28, height:28, display:"flex", alignItems:"center", justifyContent:"center", color:C.text3, cursor:"pointer", boxShadow:"0 2px 6px rgba(0,0,0,.08)" }}>{IC.copy(13)}</button>
-    <button onClick={(e)=>{e.stopPropagation(); onDelete();}} style={{ background:C.cardBg, border:`1px solid ${C.redBg}`, borderRadius:7, width:28, height:28, display:"flex", alignItems:"center", justifyContent:"center", color:C.red, cursor:"pointer", boxShadow:"0 2px 6px rgba(0,0,0,.08)" }}>{IC.trash(13)}</button>
-  </div>
-);
+const NodeActions = ({ x, y, onConfigure, onDuplicate, onDelete }) => {
+  const btn = { background:C.cardBg, border:`1px solid ${C.cardBorder}`, borderRadius:7, width:28, height:28, display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", boxShadow:"0 2px 6px rgba(0,0,0,.08)" };
+  return (
+    <div onMouseDown={(e)=>e.stopPropagation()} style={{ position:"absolute", left:x, top:y, transform:"translate(-50%,-100%)", zIndex:10, display:"flex", gap:4 }}>
+      <button title="Configure" onClick={(e)=>{e.stopPropagation(); onConfigure();}} style={{ ...btn, color:C.brand, borderColor:C.brand }}>{IC.edit(13)}</button>
+      <button title="Duplicate" onClick={(e)=>{e.stopPropagation(); onDuplicate();}} style={{ ...btn, color:C.text3 }}>{IC.copy(13)}</button>
+      <button title="Delete" onClick={(e)=>{e.stopPropagation(); onDelete();}} style={{ ...btn, color:C.red, borderColor:C.redBg }}>{IC.trash(13)}</button>
+    </div>
+  );
+};
 
 
 /* ── Node Picker (add node between / append) ── */
@@ -3666,6 +3669,7 @@ const Canvas = ({
           <NodeActions
             x={selectedNode.x + NODE_W/2}
             y={selectedNode.y - 8}
+            onConfigure={()=>onOpenDetail(selectedNode.id)}
             onDuplicate={()=>onDuplicateNode(selectedNode.id)}
             onDelete={()=>onDeleteNode(selectedNode.id)}
           />
@@ -3673,7 +3677,7 @@ const Canvas = ({
       </div>
 
       <div style={{ position:"absolute", top:14, left:"50%", transform:"translateX(-50%)", background:C.cardBg, border:`1px solid ${C.cardBorder}`, borderRadius:99, padding:"6px 14px", display:"flex", alignItems:"center", gap:10, boxShadow:"0 2px 8px rgba(0,0,0,.05)", fontSize:11, color:C.text3, fontWeight:500, fontFamily:"'Manrope'", whiteSpace:"nowrap" }}>
-        <span>Tap a step to edit</span>
+        <span>Click to select · double-click to edit · drag to move</span>
         <span style={{ width:1, height:12, background:C.cardBorder }}/>
         <span style={{ display:"inline-flex", alignItems:"center", gap:5 }}>
           <span style={{ width:16, height:16, borderRadius:"50%", background:C.cardBg, border:`1.5px dashed ${C.text4}`, color:C.text4, fontSize:11, fontWeight:600, display:"inline-flex", alignItems:"center", justifyContent:"center", lineHeight:1 }}>+</span>
@@ -3856,6 +3860,11 @@ const AutomationBuilderView = ({ automation, onBack, onSave, onToggleStatus, act
   }, [automation?.id]);
 
   const [selectedId, setSelectedId] = useState(null);
+  // `detailId` is the node whose settings MODAL is open — kept separate from
+  // selection so a plain click/drag only selects (n8n-style); the modal opens on
+  // double-click or the Configure button.
+  const [detailId, setDetailId] = useState(null);
+  const openDetail = (id) => { setSelectedId(id); setDetailId(id); };
   const [transform,  setTransform]  = useState({ x:30, y:30, scale:0.7 });
   const [panning,    setPanning]    = useState(false);
   const [showPreview,setShowPreview]= useState(false);
@@ -3920,6 +3929,15 @@ const AutomationBuilderView = ({ automation, onBack, onSave, onToggleStatus, act
   useEffect(() => { transformRef.current = transform; }, [transform]);
   const selSetRef = useRef(selSet);
   useEffect(() => { selSetRef.current = selSet; }, [selSet]);
+  // Latest-state refs so the global mousemove/mouseup drag listeners (attached
+  // once at drag start) never read a stale `nodes`/`edges`/`pushHistory` — that
+  // closure bug meant a node drag was never recorded in undo history.
+  const nodesRef = useRef(nodes);
+  useEffect(() => { nodesRef.current = nodes; }, [nodes]);
+  const edgesRef = useRef(edges);
+  useEffect(() => { edgesRef.current = edges; }, [edges]);
+  const pushHistoryRef = useRef(pushHistory);
+  useEffect(() => { pushHistoryRef.current = pushHistory; }, [pushHistory]);
 
   const screenToWorld = (sx, sy) => {
     const t = transformRef.current;
@@ -3969,6 +3987,7 @@ const AutomationBuilderView = ({ automation, onBack, onSave, onToggleStatus, act
       return nextNodes;
     });
     if (selectedId === id) setSelectedId(null);
+    if (detailId === id) setDetailId(null);
     setSelSet(s => { const ns = new Set(s); ns.delete(id); return ns; });
   };
 
@@ -4021,8 +4040,10 @@ const AutomationBuilderView = ({ automation, onBack, onSave, onToggleStatus, act
     const pos = screenToWorld(e.clientX, e.clientY);
     const dx = pos.x - node.x;
     const dy = pos.y - node.y;
-    dragRef.current = { id, dx, dy, multi: e.metaKey || e.ctrlKey, shift: e.shiftKey };
-    dragStartStateRef.current = { nodes: JSON.parse(JSON.stringify(nodes)), edges: JSON.parse(JSON.stringify(edges)) };
+    // startX/startY + moved gate the actual node movement behind a small
+    // threshold so a plain click can't accidentally nudge the node, and so we
+    // only record undo history when a real drag happened.
+    dragRef.current = { id, dx, dy, startX: e.clientX, startY: e.clientY, moved: false, multi: e.metaKey || e.ctrlKey, shift: e.shiftKey };
     if (e.metaKey || e.ctrlKey) { toggleSel(id); }
     else if (e.shiftKey) { if (!selSet.has(id)) addSel(id); }
     else { setSelSet(new Set([id])); }
@@ -4032,6 +4053,10 @@ const AutomationBuilderView = ({ automation, onBack, onSave, onToggleStatus, act
 
   const onDragMove = useCallback((e) => {
     const d = dragRef.current; if (!d) return;
+    if (!d.moved) {
+      if (Math.hypot(e.clientX - d.startX, e.clientY - d.startY) < 3) return; // below threshold → still a click
+      d.moved = true;
+    }
     const pos = screenToWorld(e.clientX, e.clientY);
     const nx = pos.x - d.dx;
     const ny = pos.y - d.dy;
@@ -4049,16 +4074,28 @@ const AutomationBuilderView = ({ automation, onBack, onSave, onToggleStatus, act
   }, []);
 
   const onDragUp = useCallback(() => {
-    if (dragStartStateRef.current) {
-      const startNodes = dragStartStateRef.current.nodes;
-      const hasMoved = JSON.stringify(startNodes) !== JSON.stringify(nodes);
-      if (hasMoved) pushHistory(nodes, edges);
-      dragStartStateRef.current = null;
-    }
+    const d = dragRef.current;
+    // Record the FINAL positions (read via refs, never a stale closure) so the
+    // drag is undoable.
+    if (d && d.moved) pushHistoryRef.current(nodesRef.current, edgesRef.current);
     dragRef.current = null;
+    dragStartStateRef.current = null;
     window.removeEventListener("mousemove", onDragMove);
     window.removeEventListener("mouseup", onDragUp);
-  }, [nodes, edges, pushHistory]);
+  }, [onDragMove]);
+
+  // Zoom keeping the viewport CENTER fixed — used by the toolbar +/- buttons so
+  // content doesn't jump toward the world origin (matches the cursor wheel-zoom).
+  const zoomAtCenter = (factor) => {
+    const rect = viewportRef.current?.getBoundingClientRect();
+    const cx = rect ? rect.width / 2 : 0;
+    const cy = rect ? rect.height / 2 : 0;
+    setTransform(t => {
+      const s2 = Math.min(2, Math.max(0.3, t.scale * factor));
+      const k = s2 / t.scale;
+      return { x: cx - (cx - t.x) * k, y: cy - (cy - t.y) * k, scale: s2 };
+    });
+  };
 
   const onViewportMouseDown = (e) => {
     if (e.button !== 0 && e.button !== 1) return;
@@ -4109,12 +4146,12 @@ const AutomationBuilderView = ({ automation, onBack, onSave, onToggleStatus, act
           const newEdge = { from: c.fromId, to: toId };
           if (c.fromHandle && c.fromHandle !== "default") newEdge.fromHandle = c.fromHandle;
           const next = [...filtered, newEdge];
-          pushHistory(nodes, next);
+          pushHistoryRef.current(nodesRef.current, next);
           return next;
         });
       }
     }
-  }, [nodes, pushHistory]);
+  }, [onConnectMove]);
 
   const onClickEdgePlus = (e, edgeIndex) => {
     e.stopPropagation();
@@ -4163,9 +4200,16 @@ const AutomationBuilderView = ({ automation, onBack, onSave, onToggleStatus, act
     if (!viewportRef.current || !viewportRef.current.contains(e.target)) return;
     e.preventDefault();
     if (e.ctrlKey || e.metaKey) {
-      // Ctrl/Cmd+scroll or trackpad pinch → zoom
+      // Ctrl/Cmd+scroll or trackpad pinch → zoom TOWARD the cursor (keeps the
+      // point under the pointer fixed, like n8n) instead of the world origin.
       const ds = e.deltaY > 0 ? 0.92 : 1.08;
-      setTransform(t => ({ ...t, scale: Math.min(2, Math.max(0.3, t.scale * ds)) }));
+      const rect = viewportRef.current.getBoundingClientRect();
+      const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+      setTransform(t => {
+        const s2 = Math.min(2, Math.max(0.3, t.scale * ds));
+        const k = s2 / t.scale;
+        return { x: cx - (cx - t.x) * k, y: cy - (cy - t.y) * k, scale: s2 };
+      });
     } else {
       // Regular scroll → pan
       setTransform(t => ({ ...t, x: t.x - e.deltaX, y: t.y - e.deltaY }));
@@ -4192,7 +4236,8 @@ const AutomationBuilderView = ({ automation, onBack, onSave, onToggleStatus, act
       }
       if (e.key === "Escape") {
         setPicker(null);
-        if (!e.target.closest("input,textarea,select")) setSelectedId(null);
+        if (detailId) { setDetailId(null); }        // close the settings modal first
+        else if (!e.target.closest("input,textarea,select")) setSelectedId(null);
       }
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
         e.preventDefault();
@@ -4205,7 +4250,7 @@ const AutomationBuilderView = ({ automation, onBack, onSave, onToggleStatus, act
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [selectedId, nodes, undo, redo]);
+  }, [selectedId, detailId, nodes, undo, redo]);
 
   useEffect(() => {
     const el = viewportRef.current;
@@ -4236,6 +4281,7 @@ const AutomationBuilderView = ({ automation, onBack, onSave, onToggleStatus, act
   const confirmDelete = () => { setConfirmOpen(false); removeNode(selectedId); };
 
   const selectedNode = nodes.find(n => n.id === selectedId) || null;
+  const detailNode = nodes.find(n => n.id === detailId) || null;
 
   const isDirty = useMemo(() => {
     return JSON.stringify({ nodes, edges }) !== savedSnapshot;
@@ -4324,8 +4370,8 @@ const AutomationBuilderView = ({ automation, onBack, onSave, onToggleStatus, act
         onRedo={redo}
         canUndo={canUndo}
         canRedo={canRedo}
-        onZoomIn={() => setTransform(t => ({ ...t, scale: Math.min(2, t.scale * 1.2) }))}
-        onZoomOut={() => setTransform(t => ({ ...t, scale: Math.max(0.3, t.scale / 1.2) }))}
+        onZoomIn={() => zoomAtCenter(1.2)}
+        onZoomOut={() => zoomAtCenter(1 / 1.2)}
         onFit={() => {
           if (!nodes.length || !viewportRef.current) return;
           const rect = viewportRef.current.getBoundingClientRect();
@@ -4386,18 +4432,18 @@ const AutomationBuilderView = ({ automation, onBack, onSave, onToggleStatus, act
             viewportRef={viewportRef} onViewportMouseDown={onViewportMouseDown}
             onAutoLayout={autoLayout}
             whatsappAccounts={whatsappAccounts}
-            onOpenDetail={setSelectedId}
+            onOpenDetail={openDetail}
           />
 
-          {selectedNode && (
-            <NodeDetailView node={selectedNode} nodes={nodes} edges={edges} contactFields={contactFields} templates={templates} onClose={()=>setSelectedId(null)}>
+          {detailNode && (
+            <NodeDetailView node={detailNode} nodes={nodes} edges={edges} contactFields={contactFields} templates={templates} onClose={()=>setDetailId(null)}>
             <SettingsPanel
               embedded
-              node={selectedNode} nodes={nodes} edges={edges}
+              node={detailNode} nodes={nodes} edges={edges}
               onUpdateNode={updateNode}
               onDeleteNode={openConfirm}
               onDuplicateNode={duplicateNode}
-              onSaveAndClose={() => { handleSave(); setSelectedId(null); }}
+              onSaveAndClose={() => { handleSave(); setDetailId(null); }}
               onToggleDisable={toggleNodeDisable}
               onDeleteButton={(nid, bid)=>updateNode(nid, n => ({
                 ...n, actions: (n.actions || []).filter(a => a.id !== bid)

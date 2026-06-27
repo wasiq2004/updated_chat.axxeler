@@ -164,14 +164,13 @@ export default function Sidebar({ activePage, onPageChange, collapsed, setCollap
         {!collapsed && (
           <div style={{ padding: '0 14px 10px' }}>
             <span style={{ fontSize: 9, fontWeight: 700, color: C.textMuted, fontFamily: FONT, letterSpacing: '.08em', textTransform: 'uppercase' }}>
-              Powered by No one, Need Partnership!!
+          
             </span>
           </div>
         )}
         {collapsed && (
           <div style={{ padding: '0 0 8px', textAlign: 'center' }}>
             <span style={{ fontSize: 7, fontWeight: 700, color: C.textMuted, fontFamily: FONT, letterSpacing: '.06em', textTransform: 'uppercase' }}>
-              Powered by No one, Need Partnership!!
             </span>
           </div>
         )}
