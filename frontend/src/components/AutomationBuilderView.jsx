@@ -531,7 +531,7 @@ export const makeNode = (type, x, y, id, templates) => {
   if (type === "condition") return { ...base, matchMode: "all", rules: [] };
   if (type === "action") return { ...base, actions: [] };
   if (type === "delay") return { ...base, delayMode: "duration", waitValue: "10", waitUnit: "minutes", useContactTz: false };
-  if (type === "api") return { ...base, method: "POST", apiUrl: "", headers: {}, body: "", onError: "continue" };
+  if (type === "api") return { ...base, method: "POST", url: "", apiHeaders: [], apiBody: "", respPath: "", respField: "", onError: "continue" };
   if (type === "handoff") return { ...base, assignMode: "specific", assigned: [], priority: "high", slaValue: "15", slaUnit: "minutes", internalNote: "", notify: { wa:true, email:true, task:false } };
   if (type === "ai") return { ...base, aiTask: "lead_qualification", aiGoal: "", aiContext: "", aiSaveTo: "", aiFallback: "fallback_message", fallbackTemplateId: "" };
   if (type === "subflow") return { ...base, flowId: "", waitMode: "await" };
@@ -997,11 +997,23 @@ const BLOCK_GROUPS = [
       defaults:{ actions:[{ kind:"Add Tag", value:"" }], summary:"Add a tag to the contact" } },
     { name:"Remove Tag", type:"action", icon:IC.tag, desc:"Remove a tag",
       defaults:{ actions:[{ kind:"Remove Tag", value:"" }], summary:"Remove a tag from the contact" } },
+    { name:"Assign to BDA", type:"action", icon:IC.agent, desc:"Assign the chat to a BDA",
+      defaults:{ actions:[{ kind:"Assign to BDA", value:"" }], summary:"Assign this conversation to a sales user" } },
+    { name:"Set Custom Field", type:"action", icon:IC.cog, desc:"Write a contact field",
+      defaults:{ actions:[{ kind:"Set Custom Field", value:"" }], summary:"Set a custom field on the contact" } },
+    { name:"Clear Custom Field", type:"action", icon:IC.cog, desc:"Clear a contact field",
+      defaults:{ actions:[{ kind:"Clear Custom Field", value:"" }], summary:"Clear a custom field on the contact" } },
+  ]},
+  { title:"Team", color:C.text3, items:[
+    { name:"Human Handoff", type:"handoff", icon:IC.agent, desc:"Assign the chat to a team member and stop the bot" },
+  ]},
+  { title:"Integrations", color:C.text3, items:[
+    { name:"API Request", type:"api", icon:IC.api, desc:"Call an external HTTP API / webhook" },
   ]},
 ];
 
 const BlockLibrary = ({ onAddBlock }) => {
-  const [openG, setOpenG] = useState({ Triggers:true, Messages:true, Logic:true, Actions:true, "API & Integrations":true, AI:true, Workflows:true });
+  const [openG, setOpenG] = useState({ Triggers:true, Messages:true, Logic:true, Actions:true, Team:true, Integrations:true, AI:true, Workflows:true });
   const [q, setQ] = useState("");
   return (
     <aside style={{ width:236, borderRight:`1px solid ${C.cardBorder}`, background:C.cardBg, display:"flex", flexDirection:"column", flexShrink:0 }}>
@@ -1795,52 +1807,65 @@ const SettingsPanel = ({ node, nodes=[], edges=[], onUpdateNode=()=>{}, onDelete
     </>);
   }
   else if (node.type === "api") {
+    const method = node.method || "POST";
+    const url = node.url !== undefined ? node.url : "";
+    const apiHeaders = Array.isArray(node.apiHeaders) ? node.apiHeaders : [];
+    const apiBody = node.apiBody !== undefined ? node.apiBody : "";
+    const onErr = node.onError || "continue";
+    const bodyless = method === "GET" || method === "DELETE";
+    const setHeader = (i, patch) => onUpdateNode(node.id, n => { const h = [...(n.apiHeaders || [])]; h[i] = { ...h[i], ...patch }; return { ...n, apiHeaders: h }; });
+    const addHeader = () => onUpdateNode(node.id, n => ({ ...n, apiHeaders: [...(n.apiHeaders || []), { k: "", v: "" }] }));
+    const delHeader = (i) => onUpdateNode(node.id, n => ({ ...n, apiHeaders: (n.apiHeaders || []).filter((_, j) => j !== i) }));
     content = (<>
-      <Field label="Method & URL">
+      <Field label="Method & URL" hint="Variables like {{phone}} are resolved at run time.">
         <div style={{ display:"flex", gap:6 }}>
-          <Select style={{ width:84, fontFamily:"'Geist Mono'", fontWeight:700, color:C.brand }}><option>POST</option><option>GET</option><option>PUT</option><option>PATCH</option></Select>
-          <Input style={{ flex:1, fontFamily:"'Geist Mono'", fontSize:11 }} defaultValue="https://api.example.com/leads"/>
+          <Select value={method} onChange={e=>onUpdateNode(node.id, { method: e.target.value })} style={{ width:92, fontFamily:"'Geist Mono'", fontWeight:700, color:C.brand }}>
+            {["GET","POST","PUT","PATCH","DELETE"].map(m=><option key={m} value={m}>{m}</option>)}
+          </Select>
+          <VarInput value={url} onChange={e=>onUpdateNode(node.id, { url: e.target.value })} placeholder="https://api.example.com/leads" style={{ flex:1, fontFamily:"'Geist Mono'", fontSize:11 }}/>
         </div>
+        {url && !/^https?:\/\//i.test(url) && <div style={{ fontSize:10, color:C.red, marginTop:5, fontWeight:600 }}>URL must start with http:// or https://</div>}
       </Field>
       <Field label="Headers">
         <div style={{ background:C.sectionBg, border:`1px solid ${C.innerBorder}`, borderRadius:8, padding:8 }}>
-          {[{k:"Authorization",v:"Bearer ********"},{k:"Content-Type",v:"application/json"}].map((h,i)=>(
+          {apiHeaders.length === 0 && <div style={{ fontSize:10.5, color:C.text5, padding:"2px 4px 6px" }}>No headers.</div>}
+          {apiHeaders.map((h,i)=>(
             <div key={i} style={{ display:"grid", gridTemplateColumns:"1fr 1.6fr 24px", gap:5, marginBottom:4 }}>
-              <Input defaultValue={h.k} style={{ padding:"5px 8px", fontSize:10, fontFamily:"'Geist Mono'" }}/>
-              <Input defaultValue={h.v} style={{ padding:"5px 8px", fontSize:10, fontFamily:"'Geist Mono'" }}/>
-              <IconBtn>{IC.x(12)}</IconBtn>
+              <Input value={h.k || ""} onChange={e=>setHeader(i,{ k:e.target.value })} placeholder="Header" style={{ padding:"5px 8px", fontSize:10, fontFamily:"'Geist Mono'" }}/>
+              <Input value={h.v || ""} onChange={e=>setHeader(i,{ v:e.target.value })} placeholder="Value" style={{ padding:"5px 8px", fontSize:10, fontFamily:"'Geist Mono'" }}/>
+              <IconBtn danger onClick={()=>delHeader(i)}>{IC.x(12)}</IconBtn>
             </div>
           ))}
-          <button style={{ background:"none", border:"none", color:C.text4, fontSize:11, fontWeight:600, cursor:"pointer", padding:"3px 4px" }}>+ Add header</button>
+          <button onClick={addHeader} style={{ background:"none", border:"none", color:C.text4, fontSize:11, fontWeight:600, cursor:"pointer", padding:"3px 4px" }}>+ Add header</button>
         </div>
       </Field>
-      <Field label="Body · JSON">
-        <pre style={{ background:"#0E1F1A", color:"#7FE5BB", borderRadius:8, padding:12, fontSize:10.5, lineHeight:1.55, fontFamily:"'Geist Mono'", overflowX:"auto", margin:0 }}>{`{\n  "name":       "{{first_name}}",\n  "phone":      "{{phone}}",\n  "city":       "{{city}}",\n  "bhk_type":   "{{bhk_type}}",\n  "lead_score": "{{lead_score}}",\n  "source":     "whatsapp_flow"\n}`}</pre>
-      </Field>
-      <Field label="Save response to field" hint="Extract a value from the API response (JSONPath) and save it on the contact.">
+      {!bodyless && (
+        <Field label="Body · JSON" hint="Sent as the request body. Use {{variables}}.">
+          <VarTextarea value={apiBody} onChange={e=>onUpdateNode(node.id, { apiBody: e.target.value })} placeholder={'{\n  "name": "{{first_name}}",\n  "phone": "{{phone}}"\n}'} style={{ fontFamily:"'Geist Mono'", fontSize:11, minHeight:110 }}/>
+        </Field>
+      )}
+      <Field label="Save response to field (optional)" hint="Extract a value from the JSON response (e.g. $.id) and save it on the contact.">
         <div style={{ display:"flex", gap:6 }}>
-          <Input style={{ flex:1, fontFamily:"'Geist Mono'", fontSize:11 }} defaultValue="$.id"/>
+          <Input value={node.respPath || ""} onChange={e=>onUpdateNode(node.id, { respPath: e.target.value })} placeholder="$.id" style={{ flex:1, fontFamily:"'Geist Mono'", fontSize:11 }}/>
           <span style={{ alignSelf:"center", fontSize:12, color:C.text5 }}>→</span>
-          <Select style={{ flex:1 }}>
+          <Select value={node.respField || ""} onChange={e=>onUpdateNode(node.id, { respField: e.target.value })} style={{ flex:1 }}>
             <option value="">— Select a field —</option>
             {fieldNames.map(f => <option key={f} value={f}>{f}</option>)}
-            <option value="__new__">+ New field</option>
           </Select>
         </div>
       </Field>
       <Field label="On error">
-        <div style={{ display:"flex", gap:6 }}><Pill active>Continue</Pill><Pill>Retry 3x</Pill><Pill>Exit flow</Pill></div>
-      </Field>
-      <div style={{ background:C.sectionBg, border:`1px solid ${C.innerBorder}`, borderRadius:10, padding:10, marginTop:4 }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6 }}>
-          <Sec>Last test</Sec>
-          <span style={{ fontSize:10, color:C.brand, fontFamily:"'Geist Mono'", fontWeight:700 }}>200 OK · 421ms</span>
+        <div style={{ display:"flex", gap:6 }}>
+          <Pill active={onErr==="continue"} onClick={()=>onUpdateNode(node.id, { onError:"continue" })}>Continue</Pill>
+          <Pill active={onErr==="retry"}    onClick={()=>onUpdateNode(node.id, { onError:"retry" })}>Retry 3x</Pill>
+          <Pill active={onErr==="exit"}     onClick={()=>onUpdateNode(node.id, { onError:"exit" })}>Exit flow</Pill>
         </div>
-        <pre style={{ fontSize:10, color:C.text4, fontFamily:"'Geist Mono'", margin:0 }}>{`{"id":"42851392","createdAt":"2026-05-14..."}`}</pre>
-      </div>
-      <div style={{ display:"flex", gap:6, marginTop:12 }}>
-        <Btn kind="ghost" size="sm">Test request</Btn>
-        <Btn kind="ghost" size="sm">View logs</Btn>
+      </Field>
+      <Alert kind="info">The request runs server-side through an SSRF guard (loopback / internal / cloud-metadata addresses are blocked) with a 15s timeout.</Alert>
+      <div style={{ display:"flex", gap:6, marginTop:14 }}>
+        <Btn kind="primary" style={{ flex:1, justifyContent:"center" }} onClick={onSaveAndClose}>Save</Btn>
+        <Btn kind="ghost" icon={IC.copy(13)} onClick={()=>onDuplicateNode(node.id)}>Duplicate</Btn>
+        <Btn kind="danger" icon={IC.trash(13)} onClick={()=>onDeleteNode(node.id)}>Delete</Btn>
       </div>
     </>);
   }
@@ -2387,9 +2412,15 @@ const SettingsPanel = ({ node, nodes=[], edges=[], onUpdateNode=()=>{}, onDelete
         </div>
       </div>
 
-      <Field label="Trigger type" hint="Automations are keyword-triggered.">
-        <Select value="keyword" disabled style={{ fontWeight:600 }}>
-          <option value="keyword">Keyword Trigger</option>
+      <Field label="Trigger type" hint="What starts this automation.">
+        <Select value={tk} onChange={(e)=>{
+          const kind = e.target.value;
+          const disp = getTriggerDisplay({ ...node, triggerKind: kind });
+          onUpdateNode(node.id, { triggerKind: kind, title: disp.title, sub: disp.sub });
+        }} style={{ fontWeight:600 }}>
+          <option value="keyword">Keyword — contact sends a word/phrase</option>
+          <option value="anyMessage">Any Message — every inbound message</option>
+          <option value="newContact">New Contact — first-time message from a new contact</option>
         </Select>
       </Field>
 
@@ -3766,15 +3797,16 @@ const AutomationBuilderView = ({ automation, onBack, onSave, onToggleStatus, act
     let alive = true;
     (async () => {
       try {
-        const [tpls, mems, tgs, cFields, flows, accs, usrs] = await Promise.all([
+        const [tpls, users, tgs, cFields, flows, accs] = await Promise.all([
           api.templates.list(),
-          Promise.resolve([]),            // team members removed (single-owner system)
+          api.users.list().catch(() => []), // tenant users → Human Handoff assignees + Assign-to-BDA
           api.tags.list(),
           api.contactFields.list(),
           api.chatbots.list(),
           api.whatsappAccounts.list(true).catch(() => []),
-          Promise.resolve([]),            // multi-user removed (single-owner system)
         ]);
+        // Active sales/admin staff can be assigned conversations.
+        const staff = (users || []).filter(u => u.isActive !== false && (u.role === 'bda_sales' || u.role === 'admin'));
         if (!alive) return;
         // Include APPROVED (sendable) and SUBMITTED (pending Meta review) so a
         // just-submitted template can be wired into an automation now and will
@@ -3784,12 +3816,12 @@ const AutomationBuilderView = ({ automation, onBack, onSave, onToggleStatus, act
           const s = String(t.status || "").toUpperCase();
           return s === "APPROVED" || s === "SUBMITTED";
         }));
-        setTeamMembers(mems || []);
+        setTeamMembers(staff.map(u => ({ id: u.id, name: u.displayName || u.username || `User ${u.id}`, role: u.role })));
         setTags(tgs || []);
         setContactFields(cFields || []);
         setOtherAutomations((flows || []).filter(f => f.id !== automation?.id));
         setWhatsappAccounts(accs || []);
-        setAssignableUsers((usrs || []).filter(u => u.isActive !== false && (u.role === 'bda_sales' || u.role === 'admin')));
+        setAssignableUsers(staff);
 
         // Sample contacts for the Condition node's "Test with a sample contact".
         // Non-fatal: if it fails the selector just shows "no contacts available".

@@ -156,7 +156,9 @@ describe('makeNode', () => {
     const n = makeNode('api', 0, 0, 'n1', []);
     expect(n.type).toBe('api');
     expect(n.method).toBe('POST');
-    expect(n.headers).toEqual({});
+    expect(n.url).toBe('');
+    expect(n.apiHeaders).toEqual([]);
+    expect(n.onError).toBe('continue');
   });
 
   it('creates handoff node with defaults', () => {

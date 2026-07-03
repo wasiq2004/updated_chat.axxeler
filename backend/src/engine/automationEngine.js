@@ -1,4 +1,5 @@
 const pool = require('../db');
+const { ssrfSafeFetch } = require('../util/ssrfGuard');
 
 /* ══════════════════════════════════════════════════════════════════════
    Minimal Automation Execution Engine
@@ -1022,16 +1023,59 @@ async function executeActionNode(client, executionId, node, context) {
   return logStep(client, executionId, node, { actions, contact: { waNumber, contactNumber } }, { results }, stepStatus);
 }
 
+// Human Handoff: assign the conversation to a team member and STOP the automated
+// flow so a human can take over (the bot won't keep messaging past this node).
+// assignMode 'specific' reads node.assigned (an ordered list of user ids) and
+// picks the first active bda_sales/admin. Notifications (email/task) are recorded
+// in the step log but not delivered — those subsystems aren't wired in this build.
 async function executeHandoffNode(client, executionId, node, context) {
+  const waNumber = context.trigger_data?.wa_number;
+  const contactNumber = context.contact_number;
+
+  const ids = Array.isArray(node.assigned) ? node.assigned.map(x => parseInt(x, 10)).filter(Boolean) : [];
+  let assignee = null;
+  if (ids.length) {
+    const { rows } = await client.query(
+      `SELECT id, display_name, role FROM coexistence.z_chat_users
+        WHERE id = ANY($1::bigint[]) AND is_active <> FALSE AND role IN ('bda_sales','admin')
+        ORDER BY array_position($1::bigint[], id) LIMIT 1`,
+      [ids]
+    );
+    assignee = rows[0] || null;
+  }
+
+  let assignedContact = null;
+  if (assignee && waNumber && contactNumber) {
+    const { rows } = await client.query(
+      `INSERT INTO coexistence.contacts (wa_number, contact_number, assigned_user_id, updated_at, tenant_id, organization_id)
+       VALUES ($1, $2, $3, NOW(),
+         (SELECT tenant_id FROM coexistence.whatsapp_accounts WHERE regexp_replace(display_phone_number,'[^0-9]','','g') = regexp_replace($1,'[^0-9]','','g')),
+         (SELECT organization_id FROM coexistence.whatsapp_accounts WHERE regexp_replace(display_phone_number,'[^0-9]','','g') = regexp_replace($1,'[^0-9]','','g')))
+       ON CONFLICT (wa_number, contact_number) DO UPDATE
+         SET assigned_user_id = EXCLUDED.assigned_user_id, updated_at = NOW(),
+             tenant_id = COALESCE(coexistence.contacts.tenant_id, EXCLUDED.tenant_id),
+             organization_id = COALESCE(coexistence.contacts.organization_id, EXCLUDED.organization_id)
+       RETURNING wa_number, contact_number, assigned_user_id`,
+      [waNumber, contactNumber, assignee.id]
+    );
+    assignedContact = rows[0];
+  }
+
   const output = {
     assignMode: node.assignMode || 'specific',
-    assigned: node.assigned || [],
+    assignedTo: assignee ? { id: assignee.id, displayName: assignee.display_name, role: assignee.role } : null,
     priority: node.priority || 'normal',
-    slaValue: node.slaValue,
-    slaUnit: node.slaUnit,
-    note: 'Conversation handed off to human agent',
+    sla: node.slaValue ? `${node.slaValue} ${node.slaUnit || 'minutes'}` : null,
+    internalNote: node.internalNote || null,
+    contact: assignedContact,
+    handedOff: true,
+    note: assignee
+      ? `Conversation assigned to ${assignee.display_name}. Automation stops here so the human can take over.`
+      : 'Handoff reached but no active assignee was configured — automation stops for human review.',
   };
-  return logStep(client, executionId, node, {}, output, 'success');
+  const step = await logStep(client, executionId, node, {}, output, assignee ? 'success' : 'error');
+  step.__endExecution = true; // human takes over → don't keep walking the graph
+  return step;
 }
 
 async function executeAINode(client, executionId, node, context) {
@@ -1045,13 +1089,118 @@ async function executeAINode(client, executionId, node, context) {
   return logStep(client, executionId, node, {}, output, 'success');
 }
 
+// Minimal `$.a.b[0].c` (or `a.b`) extractor. No wildcards/filters — just a path.
+function extractJsonPath(obj, path) {
+  const clean = String(path || '').replace(/^\$\.?/, '').trim();
+  if (!clean) return obj;
+  return clean.split('.').reduce((acc, key) => {
+    if (acc == null) return undefined;
+    const m = key.match(/^([^[]+)?(?:\[(\d+)\])?$/);
+    if (!m) return undefined;
+    let v = m[1] ? acc[m[1]] : acc;
+    if (m[2] !== undefined && Array.isArray(v)) v = v[Number(m[2])];
+    return v;
+  }, obj);
+}
+
+// API / Webhook node: make a real outbound HTTP request from the flow. URL,
+// header values and body are variable-resolved ({{name}} etc.); the request goes
+// through ssrfSafeFetch so it can't be aimed at loopback / cloud-metadata /
+// internal services. Optionally extracts a value from the JSON response and saves
+// it onto the contact. onError: 'continue' (default) | 'retry' (3x) | 'exit'.
 async function executeAPINode(client, executionId, node, context) {
-  const output = {
-    method: node.method || 'POST',
-    url: node.url,
-    note: 'API call logged (actual HTTP request not implemented)',
+  const method = String(node.method || 'POST').toUpperCase();
+  const url = resolveVariables(String(node.url || node.apiUrl || node.endpoint || ''), context).trim();
+  const onError = node.onError || 'continue';
+  const waNumber = context.trigger_data?.wa_number;
+  const contactNumber = context.contact_number;
+
+  const finishError = async (message, extra = {}) => {
+    const step = await logStep(client, executionId, node, { method, url }, { error: message, ...extra }, 'error');
+    if (onError === 'exit') step.__endExecution = true;
+    return step;
   };
-  return logStep(client, executionId, node, {}, output, 'success');
+
+  if (!/^https?:\/\//i.test(url)) {
+    return finishError('Invalid or missing URL (must start with http:// or https://)');
+  }
+
+  const headers = {};
+  for (const h of (Array.isArray(node.apiHeaders) ? node.apiHeaders : [])) {
+    const key = (h && (h.k ?? h.key)) ? String(h.k ?? h.key).trim() : '';
+    if (key) headers[key] = resolveVariables(String(h.v ?? h.value ?? ''), context);
+  }
+
+  const init = { method, headers };
+  if (method !== 'GET' && method !== 'DELETE') {
+    const body = resolveVariables(String(node.apiBody ?? node.body ?? ''), context);
+    if (body && body.trim()) {
+      if (!Object.keys(headers).some(k => k.toLowerCase() === 'content-type')) headers['Content-Type'] = 'application/json';
+      init.body = body;
+    }
+  }
+
+  const attempts = onError === 'retry' ? 3 : 1;
+  let res = null, raw = null, lastErr = null;
+  for (let i = 0; i < attempts; i++) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 15000);
+    try {
+      res = await ssrfSafeFetch(url, { ...init, signal: ctrl.signal });
+      raw = await res.text();
+      lastErr = null;
+      break;
+    } catch (err) {
+      lastErr = err.name === 'AbortError' ? 'Request timed out (15s)' : err.message;
+    } finally { clearTimeout(timer); }
+  }
+  if (lastErr) return finishError(lastErr, { attempts });
+
+  let parsed;
+  try { parsed = JSON.parse(raw); }
+  catch { parsed = raw && raw.length > 4000 ? raw.slice(0, 4000) + '…[truncated]' : raw; }
+
+  // Optional: extract a value from the response and save it to a contact field.
+  let savedTo = null;
+  const fieldName = String(node.respField || '').trim();
+  if (fieldName && waNumber && contactNumber) {
+    try {
+      const value = extractJsonPath(parsed, node.respPath || '$');
+      if (value !== undefined && value !== null) {
+        const { rows: fRows } = await client.query(
+          `SELECT id, name FROM coexistence.contact_field_definitions WHERE LOWER(name) = LOWER($1) LIMIT 1`, [fieldName]
+        );
+        if (fRows.length) {
+          const { rows: cur } = await client.query(
+            `SELECT custom_fields FROM coexistence.contacts WHERE wa_number = $1 AND contact_number = $2`, [waNumber, contactNumber]
+          );
+          const cf = { ...((cur[0] && cur[0].custom_fields) || {}) };
+          cf[fRows[0].id] = typeof value === 'object' ? JSON.stringify(value) : String(value);
+          await client.query(
+            `INSERT INTO coexistence.contacts (wa_number, contact_number, custom_fields, updated_at, tenant_id, organization_id)
+             VALUES ($1, $2, $3::jsonb, NOW(),
+               (SELECT tenant_id FROM coexistence.whatsapp_accounts WHERE regexp_replace(display_phone_number,'[^0-9]','','g') = regexp_replace($1,'[^0-9]','','g')),
+               (SELECT organization_id FROM coexistence.whatsapp_accounts WHERE regexp_replace(display_phone_number,'[^0-9]','','g') = regexp_replace($1,'[^0-9]','','g')))
+             ON CONFLICT (wa_number, contact_number) DO UPDATE
+               SET custom_fields = EXCLUDED.custom_fields, updated_at = NOW(),
+                   tenant_id = COALESCE(coexistence.contacts.tenant_id, EXCLUDED.tenant_id),
+                   organization_id = COALESCE(coexistence.contacts.organization_id, EXCLUDED.organization_id)`,
+            [waNumber, contactNumber, JSON.stringify(cf)]
+          );
+          context.contact = context.contact || {};
+          context.contact.custom_fields = cf;
+          savedTo = { field: fRows[0].name, value: cf[fRows[0].id] };
+        }
+      }
+    } catch (e) { savedTo = { error: `Could not save response: ${e.message}` }; }
+  }
+
+  const httpOk = res.status >= 200 && res.status < 300;
+  const step = await logStep(client, executionId, node, { method, url }, {
+    status: res.status, ok: httpOk, response: parsed, savedTo,
+  }, httpOk ? 'success' : 'error');
+  if (!httpOk && onError === 'exit') step.__endExecution = true;
+  return step;
 }
 
 async function executeSubflowNode(client, executionId, node, context) {
@@ -1075,6 +1224,8 @@ const NODE_HANDLERS = {
   condition: executeConditionNode,
   delay: executeDelayNode,
   action: executeActionNode,
+  handoff: executeHandoffNode,
+  api: executeAPINode,
 };
 
 // ─── Graph Walker ────────────────────────────────────────────────────
@@ -1155,6 +1306,11 @@ async function walkFrom(client, executionId, nodes, edges, startNodeId, context,
       // the handler already flipped the execution row to status='paused'.
       if (step && step.__pauseExecution) {
         return { paused: true };
+      }
+      // A Handoff node ends the automated flow (a human takes over) — stop
+      // walking so no further nodes run after the conversation is handed off.
+      if (step && step.__endExecution) {
+        return { paused: false };
       }
     } else {
       // Unknown / unwired node type (e.g. handoff/ai/api/subflow — defined but
@@ -1380,6 +1536,10 @@ async function evaluateTriggers(messageRecord) {
       context.field_defs = fdRows;
     } catch (e) { context.field_defs = []; }
 
+    // Computed at most once per inbound message (only when a newContact trigger
+    // is actually evaluated), then reused across every automation.
+    let isNewContact;
+
     for (const automation of automations) {
       const config = automation.config || {};
       const nodes = config.nodes || [];
@@ -1394,17 +1554,50 @@ async function evaluateTriggers(messageRecord) {
         continue;
       }
 
-      // Automations are keyword-only now. Any legacy non-keyword trigger kind
-      // (anyMessage / newContact / messageRead / messageDelivered / messageSent /
-      // link / qr / tagApplied / webhook / apiEvent) no longer fires.
+      // Message-driven trigger kinds. keyword / anyMessage / newContact all fire
+      // from an inbound WhatsApp message. link / qr / tagApplied / webhook /
+      // apiEvent originate from other event sources and are not wired here.
       const triggerKind = triggerNode.triggerKind || 'keyword';
-      if (triggerKind !== 'keyword') continue;
+      const isRealMessage = messageRecord.message_type !== 'status' && messageRecord.message_type !== 'reaction';
 
-      const keyword = triggerNode.keyword || '';
-      const matchType = triggerNode.matchType || 'exact';
-      const caseSensitive = !!triggerNode.caseSensitive;
-      if (matchesKeyword(messageRecord.message_body, keyword, matchType, caseSensitive)) {
-        console.log(`[engine] Keyword match: automation=${automation.id} keyword="${keyword}"`);
+      let shouldFire = false;
+      if (triggerKind === 'keyword') {
+        shouldFire = isRealMessage && matchesKeyword(
+          messageRecord.message_body, triggerNode.keyword || '',
+          triggerNode.matchType || 'exact', !!triggerNode.caseSensitive
+        );
+      } else if (triggerKind === 'anyMessage') {
+        if (isRealMessage) {
+          const requireTag = String(triggerNode.requireTag || '').trim().toLowerCase();
+          if (requireTag) {
+            // Honor the "only for contacts with tag" filter (tags may be strings or {name} objects).
+            const tags = (context.contact?.tags || []).map(t => (typeof t === 'string' ? t : (t?.name || ''))).map(s => String(s).toLowerCase());
+            shouldFire = tags.includes(requireTag);
+          } else {
+            shouldFire = true;
+          }
+        }
+      } else if (triggerKind === 'newContact') {
+        if (isRealMessage) {
+          // The inbound message is already committed to chat_history before we run,
+          // so "first ever inbound" means the count is exactly 1. Computed once.
+          if (isNewContact === undefined) {
+            const { rows: cc } = await client.query(
+              `SELECT COUNT(*)::int AS n FROM coexistence.chat_history
+                WHERE wa_number = $1 AND contact_number = $2 AND direction = 'incoming'`,
+              [messageRecord.wa_number, messageRecord.contact_number]
+            );
+            isNewContact = (cc[0]?.n ?? 0) <= 1;
+          }
+          shouldFire = isNewContact;
+        }
+      } else {
+        continue; // link/qr/tagApplied/webhook/apiEvent — not fired by inbound messages
+      }
+
+      if (shouldFire) {
+        context.trigger_type = triggerKind;
+        console.log(`[engine] Trigger match (${triggerKind}): automation=${automation.id}`);
         const execution = await executeAutomation(client, automation, context);
         if (execution) executions.push(execution);
       }
