@@ -4,54 +4,39 @@ const pool = require('../db');
 const { requirePermission, scopeClause, orgScope } = require('../middleware/access');
 
 /**
- * Automations are linear keyword→message flows: one Keyword Trigger followed by
- * a straight chain of Send Message nodes. This collapses any saved config to
- * that shape:
- *   - keep the (single) trigger node as-is,
- *   - keep message nodes only, in graph order (DFS from the trigger; any
- *     unreachable messages appended so nothing is silently lost),
- *   - drop every other node type (condition/delay/action/handoff/ai/api/subflow),
- *   - rebuild edges as a single linear chain (trigger → msg → msg → …).
- * Idempotent and safe to run on every save and as a one-time migration.
+ * Graph-preserving config sanitizer. The engine executes the full node graph
+ * (trigger/message/condition/delay/action/handoff/ai/api/subflow), so saving
+ * must NOT collapse flows to a linear chain — branching (condition yes/no) and
+ * every implemented node type survive persistence. This only removes garbage:
+ *   - non-object nodes / nodes without an id, duplicate ids (first wins),
+ *   - nodes of unknown type,
+ *   - edges that don't connect two existing nodes.
+ * Idempotent and safe on every save.
  */
-function sanitizeToLinear(config) {
+const VALID_NODE_TYPES = new Set([
+  'trigger', 'message', 'condition', 'delay', 'action',
+  'handoff', 'ai', 'api', 'subflow',
+]);
+function sanitizeConfig(config) {
   if (!config || typeof config !== 'object') return config;
-  const nodes = Array.isArray(config.nodes) ? config.nodes : [];
-  const edges = Array.isArray(config.edges) ? config.edges : [];
-  if (nodes.length === 0) return config;
+  const rawNodes = Array.isArray(config.nodes) ? config.nodes : [];
+  const rawEdges = Array.isArray(config.edges) ? config.edges : [];
 
-  const trigger = nodes.find(n => n && n.type === 'trigger') || null;
-  const nodeById = new Map(nodes.filter(n => n && n.id != null).map(n => [n.id, n]));
-  const adj = {};
-  for (const e of edges) {
-    if (e && e.from != null) (adj[e.from] = adj[e.from] || []).push(e.to);
+  const seen = new Set();
+  const nodes = [];
+  for (const n of rawNodes) {
+    if (!n || typeof n !== 'object' || n.id == null) continue;
+    if (!VALID_NODE_TYPES.has(n.type)) continue;
+    if (seen.has(n.id)) continue;
+    seen.add(n.id);
+    nodes.push(n);
   }
 
-  const orderedMessages = [];
-  const visited = new Set();
-  const dfs = (id) => {
-    if (id == null || visited.has(id)) return;
-    visited.add(id);
-    const n = nodeById.get(id);
-    if (n && n.type === 'message') orderedMessages.push(n);
-    for (const to of (adj[id] || [])) dfs(to);
-  };
-  dfs(trigger ? trigger.id : (nodes[0] && nodes[0].id));
-  // Append any message nodes not reachable from the trigger (preserve them).
-  for (const n of nodes) {
-    if (n && n.type === 'message' && !visited.has(n.id)) orderedMessages.push(n);
-  }
+  const edges = rawEdges.filter(e =>
+    e && typeof e === 'object' && seen.has(e.from) && seen.has(e.to) && e.from !== e.to
+  );
 
-  const keepNodes = [];
-  if (trigger) keepNodes.push(trigger);
-  keepNodes.push(...orderedMessages);
-
-  const newEdges = [];
-  for (let i = 0; i < keepNodes.length - 1; i++) {
-    newEdges.push({ from: keepNodes[i].id, to: keepNodes[i + 1].id, fromHandle: 'default' });
-  }
-
-  return { ...config, nodes: keepNodes, edges: newEdges };
+  return { ...config, nodes, edges };
 }
 
 // GET /chatbots — list all
@@ -101,7 +86,7 @@ router.post('/chatbots', requirePermission('chatbot-builder'), async (req, res) 
       `INSERT INTO coexistence.chatbots (name, description, status, trigger_type, config, tenant_id, organization_id)
        VALUES ($1,$2,$3,$4,$5,$6,$7)
        RETURNING *`,
-      [name.trim(), description || null, status || 'draft', trigger_type || 'keyword', JSON.stringify(sanitizeToLinear(config) || {}), req.tenantId ?? null, req.organizationId ?? null]
+      [name.trim(), description || null, status || 'draft', trigger_type || 'keyword', JSON.stringify(sanitizeConfig(config) || {}), req.tenantId ?? null, req.organizationId ?? null]
     );
     res.status(201).json(rows[0]);
   } catch (err) {
@@ -117,7 +102,7 @@ router.put('/chatbots/:id', requirePermission('chatbot-builder'), async (req, re
     if (name !== undefined && !name.trim()) {
       return res.status(400).json({ error: 'Name is required' });
     }
-    const updParams = [name ? name.trim() : null, description, status, trigger_type, config ? JSON.stringify(sanitizeToLinear(config)) : null, req.params.id];
+    const updParams = [name ? name.trim() : null, description, status, trigger_type, config ? JSON.stringify(sanitizeConfig(config)) : null, req.params.id];
     const { rows } = await pool.query(
       `UPDATE coexistence.chatbots SET
         name = COALESCE($1, name),
@@ -196,7 +181,7 @@ router.post('/chatbots/import', requirePermission('chatbot-builder'), async (req
       `INSERT INTO coexistence.chatbots (name, description, status, trigger_type, config, tenant_id, organization_id)
        VALUES ($1,$2,'inactive',$3,$4,$5,$6)
        RETURNING id, name, description, status, trigger_type, config, created_at, updated_at`,
-      [`${String(a.name).trim()} (imported)`.slice(0, 200), a.description || null, a.trigger_type || 'keyword', JSON.stringify(sanitizeToLinear(a.config) || {}), req.tenantId ?? null, req.organizationId ?? null]
+      [`${String(a.name).trim()} (imported)`.slice(0, 200), a.description || null, a.trigger_type || 'keyword', JSON.stringify(sanitizeConfig(a.config) || {}), req.tenantId ?? null, req.organizationId ?? null]
     );
     res.status(201).json(rows[0]);
   } catch (err) {
@@ -362,4 +347,4 @@ router.post('/executions/:id/cancel', requirePermission('chatbot-builder'), asyn
   }
 });
 
-module.exports = { router, sanitizeToLinear };
+module.exports = { router, sanitizeConfig };

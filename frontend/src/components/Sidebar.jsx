@@ -1,6 +1,6 @@
 import {
   Home, Zap, LayoutTemplate, MessageCircle, Users,
-  Megaphone, Image as ImageIcon, KanbanSquare, Bot,
+  Megaphone, Image as ImageIcon, KanbanSquare, Bot, ListChecks,
   ChevronLeft, ChevronRight, Lock, CreditCard,
 } from 'lucide-react';
 import { C, FONT } from '../constants.js';
@@ -20,6 +20,7 @@ const NAV_GROUPS = [
   { title: 'Build', items: [
     { id: 'chatbot-builder',  label: 'Automations',      Icon: Zap },
     { id: 'ai-agent-builder', label: 'AI Agents',        Icon: Bot },
+    { id: 'follow-ups',       label: 'Follow-ups',       Icon: ListChecks },
     { id: 'template-builder', label: 'Template Builder', Icon: LayoutTemplate },
     { id: 'media-library',    label: 'Media',            Icon: ImageIcon },
     { id: 'bulk-message',     label: 'Bulk Message',     Icon: Megaphone },

@@ -413,6 +413,17 @@ router.post('/contacts/save', async (req, res) => {
       assignVal = (assignedUserId === null || assignedUserId === '') ? null : parseInt(assignedUserId, 10);
     }
 
+    // Snapshot previous tags so a manual save can fire "Tag Applied" triggers
+    // on the diff (added/removed) after the upsert.
+    let prevTags = [];
+    if (tags != null) {
+      const { rows: prevRows } = await pool.query(
+        `SELECT tags FROM coexistence.contacts WHERE wa_number = $1 AND contact_number = $2`,
+        [waNumber, contactNumber]
+      );
+      prevTags = (prevRows[0] && prevRows[0].tags) || [];
+    }
+
     await pool.query(`
       INSERT INTO coexistence.contacts
         (wa_number, contact_number, name, tags, custom_fields, assigned_user_id, updated_at, tenant_id, organization_id)
@@ -428,6 +439,20 @@ router.post('/contacts/save', async (req, res) => {
         organization_id = COALESCE(coexistence.contacts.organization_id, EXCLUDED.organization_id),
         updated_at = NOW()
     `, [waNumber, contactNumber, cleanName, JSON.stringify(tags || []), cf, assignVal, setAssign, req.tenantId ?? null, req.organizationId ?? null]);
+
+    // Fire Tag Applied triggers on the tag diff (best-effort, after responding).
+    if (tags != null) {
+      const norm = (arr) => arr.map(t => String(typeof t === 'string' ? t : t?.name || '').toLowerCase()).filter(Boolean);
+      const before = new Set(norm(prevTags));
+      const after = new Set(norm(tags || []));
+      const addedTags = [...after].filter(t => !before.has(t));
+      const removedTags = [...before].filter(t => !after.has(t));
+      if (addedTags.length || removedTags.length) {
+        const { evaluateTagTriggers } = require('../engine/automationEngine');
+        setImmediate(() => evaluateTagTriggers({ waNumber, contactNumber, added: addedTags, removed: removedTags })
+          .catch(e => console.error('[messages] tag-trigger error:', e.message)));
+      }
+    }
 
     res.json({ ok: true });
   } catch (err) {

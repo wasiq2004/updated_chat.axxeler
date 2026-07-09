@@ -16,6 +16,7 @@ import AdminSettingsPage from './pages/AdminSettingsPage.jsx';
 import MediaLibraryPage from './pages/MediaLibraryPage.jsx';
 // import AboutUsPage from './pages/AboutUsPage.jsx';  // About Us hidden
 import PipelinesPage from './pages/PipelinesPage.jsx';
+import FollowUpSequencePage from './pages/FollowUpSequencePage.jsx';
 import AiAgentBuilderPage from './pages/AiAgentBuilderPage.jsx';
 import { PrivacyPolicyPage, TermsPage } from './pages/LegalPages.jsx';
 import SuperAdminPage from './pages/SuperAdminPage.jsx';
@@ -30,7 +31,7 @@ import { canAccessPage } from './lib/plans.js';
 const VALID_PAGES = new Set([
   'home', 'chatbot-builder', 'template-builder', 'chats',
   'contacts', 'pipelines', 'bulk-message', 'admin-settings', 'media-library',
-  'ai-agent-builder', 'super-admin', 'billing', 'organizations', 'branding', 'audit',
+  'ai-agent-builder', 'follow-ups', 'super-admin', 'billing', 'organizations', 'branding', 'audit',
 ]);
 
 export default function App() {
@@ -231,6 +232,7 @@ export default function App() {
       case 'chats': return <ChatsPage subParts={subParts} navigate={navigate} user={user} />;
       case 'contacts': return <ContactsPage user={user} onNavigate={navigate} />;
       case 'pipelines': return <PipelinesPage user={user} />;
+      case 'follow-ups': return <FollowUpSequencePage />;
       case 'template-builder': return <TemplateBuilderPage subParts={subParts} navigate={navigate} />;
       case 'media-library': return <MediaLibraryPage />;
       case 'bulk-message': return <BulkMessagePage onNavigate={navigate} />;

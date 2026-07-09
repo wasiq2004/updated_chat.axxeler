@@ -9,15 +9,6 @@ html, body, #root {
   width: 100%;
   overflow: hidden;
 }
-
-/* ─────────────────────────────────────────────────────────────────────────────
-   ZenAutomation palette — pulled from the logo:
-     • cyan-blue  #0FA8E0  ("utomation")   → --c-primary
-     • gold/amber #F6B100  (the arrow)     → --c-amber
-     • charcoal   #0B1620  ("Zen")         → dark text / dark surfaces
-   Colour tokens are CSS variables so the whole app re-themes when
-   <html data-theme="dark"> flips. :root = LIGHT theme.
-   ──────────────────────────────────────────────────────────────────────────── */
 :root {
   --c-pageBg: #FFFFFF;
   --c-sidebarBg: rgba(255,255,255,.82);

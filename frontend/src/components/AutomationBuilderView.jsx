@@ -1010,6 +1010,12 @@ const BLOCK_GROUPS = [
   { title:"Integrations", color:C.text3, items:[
     { name:"API Request", type:"api", icon:IC.api, desc:"Call an external HTTP API / webhook" },
   ]},
+  { title:"AI", color:C.text3, items:[
+    { name:"AI Step", type:"ai", icon:IC.ai, desc:"Task-bound AI reply (Meta-compliant)" },
+  ]},
+  { title:"Workflows", color:C.text3, items:[
+    { name:"Trigger Another Flow", type:"subflow", icon:IC.flow, desc:"Run another automation from here" },
+  ]},
 ];
 
 const BlockLibrary = ({ onAddBlock }) => {
@@ -1998,7 +2004,7 @@ const SettingsPanel = ({ node, nodes=[], edges=[], onUpdateNode=()=>{}, onDelete
         {[
           { key:"wa",    l:"WhatsApp internal note", disabled:false },
           { key:"email", l:"Email to team member",   disabled:false },
-          { key:"task",  l:"Create Task",            disabled:true  },
+          { key:"task",  l:"Create Task",            disabled:false },
         ].map(x => (
           <div key={x.key} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"7px 0", borderBottom:`1px solid ${C.rowDiv}`, opacity: x.disabled ? 0.55 : 1 }}>
             <div style={{ display:"flex", alignItems:"center", gap:7 }}>
@@ -2319,22 +2325,30 @@ const SettingsPanel = ({ node, nodes=[], edges=[], onUpdateNode=()=>{}, onDelete
     }
 
     else if (tk === "webhook") {
-      const flowId = node.id || "flow_unknown";
-      const webhookUrl = `https://hooks.whatsflow.ai/${flowId}`;
-      const secret = node.webhookSecret || "whsec_8f3a92...x42p";
+      const secret = node.webhookSecret || "";
+      const origin = typeof window !== "undefined" ? window.location.origin : "";
+      const webhookUrl = secret ? `${origin}/api/hooks/automation/${secret}` : "Generate a secret to get your URL";
       const samplePayload = node.samplePayload || `{\n  "contact_phone": "+919876543210",\n  "contact_name":  "Anjali Iyer",\n  "event":         "lead.created",\n  "source":        "facebook_lead_ad"\n}`;
+      const genSecret = () => {
+        const bytes = new Uint8Array(24);
+        (window.crypto || {}).getRandomValues ? window.crypto.getRandomValues(bytes) : bytes.forEach((_, i) => { bytes[i] = Math.floor(Math.random() * 256); });
+        const hex = Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join("");
+        onUpdateNode(node.id, { webhookSecret: `whsec_${hex}` });
+      };
       kindFields = (<>
-        <Field label="Your webhook URL" hint="Send a POST with a JSON body to this URL to fire the trigger.">
+        <Field label="Your webhook URL" hint="POST a JSON body (incl. contact_phone) to this URL to fire the trigger. Save the automation after generating.">
           <div style={{ display:"flex", gap:6 }}>
             <Input value={webhookUrl} readOnly style={{ fontFamily:"'Geist Mono'", fontSize:10, color:C.text3, background:C.sectionBg }}/>
-            <Btn kind="ghost" size="sm" icon={IC.copy(13)}>Copy</Btn>
+            <Btn kind="ghost" size="sm" icon={IC.copy(13)} disabled={!secret}
+              onClick={()=>{ try { navigator.clipboard.writeText(webhookUrl); } catch { /* ignore */ } }}>Copy</Btn>
           </div>
         </Field>
-        <Field label="Signing secret" hint="Validate that the request came from a trusted source by checking the X-Whatsflow-Signature header.">
+        <Field label="Secret" hint="The URL contains this unguessable secret — anyone with the URL can fire the flow, so treat it like a password.">
           <div style={{ display:"flex", gap:6 }}>
-            <Input value={secret} readOnly style={{ fontFamily:"'Geist Mono'", fontSize:10, color:C.text3, background:C.sectionBg }}/>
-            <Btn kind="ghost" size="sm">Rotate</Btn>
+            <Input value={secret || "— none yet —"} readOnly style={{ fontFamily:"'Geist Mono'", fontSize:10, color:C.text3, background:C.sectionBg }}/>
+            <Btn kind="ghost" size="sm" onClick={genSecret}>{secret ? "Rotate" : "Generate"}</Btn>
           </div>
+          {!secret && <div style={{ fontSize:10, color:C.red, marginTop:5, fontWeight:600 }}>Generate a secret — the trigger can't fire without one</div>}
         </Field>
         <Field label="Expected JSON payload">
           <Textarea
@@ -2343,9 +2357,9 @@ const SettingsPanel = ({ node, nodes=[], edges=[], onUpdateNode=()=>{}, onDelete
             onChange={(e)=>onUpdateNode(node.id, { samplePayload: e.target.value })}
             style={{ fontFamily:"'Geist Mono'", fontSize:11 }}
           />
-          <div style={{ fontSize:10, color:C.text5, marginTop:5, fontWeight:500 }}>Each top-level field becomes a variable downstream — e.g. <code style={{ background:C.sectionBg, padding:"1px 4px", borderRadius:3, fontFamily:"'Geist Mono'", fontWeight:600 }}>{`{{contact_name}}`}</code></div>
+          <div style={{ fontSize:10, color:C.text5, marginTop:5, fontWeight:500 }}>Each top-level field becomes a variable downstream — e.g. <code style={{ background:C.sectionBg, padding:"1px 4px", borderRadius:3, fontFamily:"'Geist Mono'", fontWeight:600 }}>{`{{contact_name}}`}</code>. <code style={{ background:C.sectionBg, padding:"1px 4px", borderRadius:3, fontFamily:"'Geist Mono'", fontWeight:600 }}>contact_phone</code> is required — it picks the contact the flow runs for.</div>
         </Field>
-        <Alert kind="info">Test the webhook in the simulator with a sample payload, or POST to the URL above from cURL/Postman.</Alert>
+        <Alert kind="info">POST to the URL above from cURL/Postman or any external system. Rotating the secret invalidates the old URL immediately after you save.</Alert>
       </>);
     }
 
@@ -2421,6 +2435,10 @@ const SettingsPanel = ({ node, nodes=[], edges=[], onUpdateNode=()=>{}, onDelete
           <option value="keyword">Keyword — contact sends a word/phrase</option>
           <option value="anyMessage">Any Message — every inbound message</option>
           <option value="newContact">New Contact — first-time message from a new contact</option>
+          <option value="link">wa.me Link — contact opens a click-to-chat link</option>
+          <option value="qr">QR Scan — contact scans a printed QR code</option>
+          <option value="tagApplied">Tag Applied — a tag is added/removed on a contact</option>
+          <option value="webhook">Webhook — an external system POSTs to your URL</option>
         </Select>
       </Field>
 

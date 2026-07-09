@@ -1,13 +1,3 @@
-// Subscribe to the backend SSE stream (/api/events). Call once at the chat
-// view's mount level and pass a stable `onEvent` callback. The auth cookie
-// rides along automatically; the browser closes the connection on tab unload
-// and auto-reconnects (EventSource's built-in ~3s retry) on transient drops.
-//
-//   const onEvent = useCallback((ev) => {
-//     if (ev.type === 'message-status') applyTick(ev.data);
-//   }, [...]);
-//   useServerEvents(onEvent);
-
 import { useEffect } from 'react';
 
 const SUBSCRIBED_EVENTS = ['message-status', 'message-new', 'hello'];

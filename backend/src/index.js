@@ -145,6 +145,9 @@ const { publicRouter: whiteLabelPublicRouter } = require('./routes/whiteLabel');
 app.use('/api', whiteLabelPublicRouter);
 // MCP API — authenticates via its OWN bearer middleware (not the JWT cookie)
 app.use('/api/mcp/v1', mcpApiRouter);
+// Automation inbound-webhook triggers — public; authenticated by the
+// per-automation secret in the URL (see routes/hooks.js).
+app.use('/api', require('./routes/hooks').publicRouter);
 // Remote (Streamable HTTP) MCP connector — key in the URL path, public.
 app.all('/api/mcp/http/:key', mcpHttpHandler);
 
@@ -190,6 +193,8 @@ app.use('/api', authMiddleware, aiModelsRouter);
 app.use('/api', authMiddleware, eventsRouter);
 app.use('/api', authMiddleware, dashboardRouter);
 app.use('/api', authMiddleware, pipelinesRouter);
+app.use('/api', authMiddleware, require('./routes/tasks').router);
+app.use('/api', authMiddleware, require('./routes/sequences').router);
 
 // Platform (Super Admin) API — internally gated to super admins (requireSuperAdmin).
 // tenantContext (mounted above) has already resolved req.isSuperAdmin.
@@ -254,6 +259,8 @@ async function start() {
   startMediaWorker();
   startSendWorker();
   startAgentWorker();
+  // Follow-up sequences: every 60s send the next due step of active enrollments.
+  require('./services/sequences').startSequenceSweeper();
 
   // Subscription expiry: keep billing status in sync (active→past_due at period
   // end, →suspended once the grace window is exhausted). Feature locking itself

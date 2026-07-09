@@ -24,10 +24,12 @@ const TABS = [
   { key: 'users', label: 'Users', icon: UsersIcon },
 ];
 
-// Two roles ship today: admin (full access) and bda_sales (labelled "Sales").
+// admin = full access · bda_sales ("Sales") = assigned chats + granted pages ·
+// viewer = read-only home (page grants can widen it).
 const ROLE_OPTIONS = [
   { value: 'admin', label: 'Admin' },
   { value: 'bda_sales', label: 'Sales' },
+  { value: 'viewer', label: 'Viewer' },
 ];
 const ROLE_LABEL = { admin: 'Admin', bda_sales: 'Sales', viewer: 'Viewer' };
 

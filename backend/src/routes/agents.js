@@ -50,6 +50,11 @@ function agentShape(row) {
     transcribeAudio: !!row.transcribe_audio,
     acceptImages: !!row.accept_images,
     crmToolsEnabled: !!row.crm_tools_enabled,
+    handoffEnabled: !!row.handoff_enabled,
+    handoffUserIds: Array.isArray(row.handoff_user_ids) ? row.handoff_user_ids : [],
+    handoffKeywords: row.handoff_keywords || '',
+    closeSummaryEnabled: !!row.close_summary_enabled,
+    closeIdleMinutes: row.close_idle_minutes != null ? row.close_idle_minutes : 30,
     triggerMode: row.trigger_mode || 'any',
     triggerKeyword: row.trigger_keyword || '',
     triggerMatchType: row.trigger_match_type || 'contains',
@@ -64,6 +69,24 @@ function agentShape(row) {
 // Coerce a raw match type to one of the supported values.
 function cleanMatchType(v) {
   return ['exact', 'contains', 'starts'].includes(v) ? v : 'contains';
+}
+
+// Handoff user ids → unique positive ints (max 50).
+function sanitizeHandoffUserIds(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const v of raw) {
+    const n = parseInt(v, 10);
+    if (Number.isInteger(n) && n > 0 && !out.includes(n)) out.push(n);
+    if (out.length >= 50) break;
+  }
+  return out;
+}
+
+// Comma-separated handoff trigger keywords → trimmed string (or '').
+function sanitizeHandoffKeywords(raw) {
+  if (raw == null) return '';
+  return String(raw).split(',').map(k => k.trim()).filter(Boolean).slice(0, 20).join(', ');
 }
 
 // Coerce a raw string into a sane http(s) URL, or null if it doesn't look like one.
@@ -305,8 +328,11 @@ router.post('/agents', adminOnly, async (req, res) => {
           context_window_messages, max_tool_iterations,
           trigger_mode, trigger_keyword, trigger_match_type,
           trigger_case_sensitive, trigger_session_minutes, media_groups,
-          transcribe_audio, accept_images, crm_tools_enabled, tenant_id, organization_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+          transcribe_audio, accept_images, crm_tools_enabled,
+          handoff_enabled, handoff_user_ids, handoff_keywords,
+          close_summary_enabled, close_idle_minutes,
+          tenant_id, organization_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
        RETURNING id`,
       [
         b.name.trim(), b.description?.trim() || null,
@@ -321,6 +347,11 @@ router.post('/agents', adminOnly, async (req, res) => {
         !!b.transcribeAudio,
         !!b.acceptImages,
         !!b.crmToolsEnabled,
+        !!b.handoffEnabled,
+        JSON.stringify(sanitizeHandoffUserIds(b.handoffUserIds)),
+        sanitizeHandoffKeywords(b.handoffKeywords),
+        !!b.closeSummaryEnabled,
+        Math.max(1, Math.min(1440, parseInt(b.closeIdleMinutes || 30, 10))),
         req.tenantId ?? null, req.organizationId ?? null,
       ],
     );
@@ -404,6 +435,13 @@ router.put('/agents/:id', adminOnly, async (req, res) => {
       push('trigger_session_minutes', Math.max(1, Math.min(1440, parseInt(b.triggerSessionMinutes, 10) || 30)));
     }
     if (b.mediaGroups !== undefined) push('media_groups', JSON.stringify(normalizeMediaGroups(b.mediaGroups)));
+    if (b.handoffEnabled !== undefined) push('handoff_enabled', !!b.handoffEnabled);
+    if (b.handoffUserIds !== undefined) push('handoff_user_ids', JSON.stringify(sanitizeHandoffUserIds(b.handoffUserIds)));
+    if (b.handoffKeywords !== undefined) push('handoff_keywords', sanitizeHandoffKeywords(b.handoffKeywords));
+    if (b.closeSummaryEnabled !== undefined) push('close_summary_enabled', !!b.closeSummaryEnabled);
+    if (b.closeIdleMinutes !== undefined) {
+      push('close_idle_minutes', Math.max(1, Math.min(1440, parseInt(b.closeIdleMinutes, 10) || 30)));
+    }
 
     params.push(req.params.id);
     const { rows } = await pool.query(

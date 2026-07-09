@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import {
   Users, UserPlus, Inbox, Send, Activity, Zap, MessageCircle,
   Megaphone, AlertTriangle, Info, ArrowUpRight, ArrowDownRight,
-  FileText, Trophy, RefreshCw, X,
+  FileText, Trophy, RefreshCw, X, ClipboardList, Check,
 } from 'lucide-react';
 import { C, FONT, MONO } from '../constants.js';
 import { api } from '../api.js';
@@ -289,8 +289,16 @@ export default function HomePage({ user, onPageChange }) {
   const { data, loading, error } = usePolling(() => api.dashboard(range), 60000, [range]);
 
   const go = (p) => onPageChange && onPageChange(p);
-  const isAdmin = true; // single-owner system: the owner sees everything
+  const isAdmin = user?.role === 'admin';
   const greeting = user?.displayName || user?.username || 'there';
+
+  // Open tasks (handoff "Create Task" + manual). Refreshed with the dashboard poll.
+  const [tasks, setTasks] = useState([]);
+  const loadTasks = () => api.tasks.list('open').then(setTasks).catch(() => setTasks([]));
+  useEffect(() => { loadTasks(); }, []);
+  const completeTask = async (t) => {
+    try { await api.tasks.update(t.id, { status: 'done' }); loadTasks(); } catch { /* keep row */ }
+  };
 
   const quickActions = isAdmin
     ? [
@@ -459,6 +467,34 @@ export default function HomePage({ user, onPageChange }) {
                 </Card>
               )}
             </div>
+          )}
+
+          {/* Open tasks (handoff Create Task + manual) */}
+          {tasks.length > 0 && (
+            <Card style={{ marginBottom: 16 }}>
+              <SectionTitle icon={ClipboardList}>Open tasks</SectionTitle>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {tasks.slice(0, 8).map(t => (
+                  <div key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12.5, fontFamily: FONT }}>
+                    <button onClick={() => completeTask(t)} title="Mark done" style={{
+                      width: 22, height: 22, borderRadius: 6, border: `1px solid ${C.border}`, background: 'transparent',
+                      cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: C.green, flexShrink: 0,
+                    }}><Check size={13} strokeWidth={2.6} /></button>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.title}</div>
+                      <div style={{ fontSize: 11, color: C.textMuted }}>
+                        {t.assigneeName ? `${t.assigneeName} · ` : ''}
+                        {t.priority !== 'normal' ? `${t.priority} · ` : ''}
+                        {t.dueAt ? `due ${new Date(t.dueAt).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}` : 'no due date'}
+                      </div>
+                    </div>
+                    {t.dueAt && new Date(t.dueAt) < new Date() && (
+                      <span style={{ fontSize: 10.5, fontWeight: 700, color: C.error, fontFamily: MONO, flexShrink: 0 }}>OVERDUE</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </Card>
           )}
 
           {/* footer note */}

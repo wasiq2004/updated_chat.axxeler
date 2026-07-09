@@ -125,6 +125,18 @@ export const api = {
       body: JSON.stringify(password ? { password } : {}),
     }),
   },
+  tasks: {
+    list: (status) => req(`/tasks${status ? `?status=${status}` : ''}`),
+    create: (data) => req('/tasks', { method: 'POST', body: JSON.stringify(data) }),
+    update: (id, data) => req(`/tasks/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+    remove: (id) => req(`/tasks/${id}`, { method: 'DELETE' }),
+  },
+  sequences: {
+    list: () => req('/sequences'),
+    create: (data) => req('/sequences', { method: 'POST', body: JSON.stringify(data) }),
+    update: (id, data) => req(`/sequences/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    remove: (id) => req(`/sequences/${id}`, { method: 'DELETE' }),
+  },
   templates: {
     list: ({ accountId, status, q } = {}) => {
       const qs = new URLSearchParams();
