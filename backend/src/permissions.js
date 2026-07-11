@@ -14,7 +14,7 @@
 
 const PAGES = [
   'home', 'chats', 'contacts', 'pipelines', 'bulk-message', 'template-builder',
-  'chatbot-builder', 'media-library', 'about',
+  'chatbot-builder', 'follow-ups', 'media-library', 'about',
   'admin-settings:general', 'admin-settings:tags', 'admin-settings:category',
   'admin-settings:fields', 'admin-settings:whatsapp-accounts',
   'admin-settings:users', 'admin-settings:mcp',

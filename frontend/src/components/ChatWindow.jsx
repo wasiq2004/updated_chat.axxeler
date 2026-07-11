@@ -322,6 +322,11 @@ export default function ChatWindow({ waNumber, contactNumber, onContactSaved }) 
   const [starOverrides, setStarOverrides] = useState({}); // messageId -> bool, optimistic
   const [statusOverrides, setStatusOverrides] = useState({}); // wamid -> 'delivered'|'read'|… live SSE tick updates
 
+  // Latest refreshers, read by onServerEvent via a ref so the SSE handler never
+  // depends on callbacks defined further down (avoids TDZ + churn).
+  const eventRefreshRef = useRef({});
+  const lastCrmRefreshRef = useRef(0);
+
   // Real-time delivery/read ticks: when a webhook advances an outbound message's
   // status the backend pushes a `message-status` SSE event; apply it instantly
   // (monotonically) so the tick turns blue without waiting for the 15s poll.
@@ -337,9 +342,24 @@ export default function ChatWindow({ waNumber, contactNumber, onContactSaved }) 
     }
     if (ev.type === 'message-new') {
       // A new message landed in this chat (an inbound reply, or an outbound send
-      // from an agent/automation/another tab). Pull it in right away instead of
-      // waiting for the 15s poll.
+      // from an agent/automation/another tab). Pull it in AND refresh the 24h
+      // window status — an inbound reply re-opens the composer instantly (fixes
+      // the "reload after re-engage" bug). Refreshers are read from a ref so this
+      // callback doesn't depend on functions defined later in the component.
       refetchOnNew();
+      eventRefreshRef.current.window?.();
+      return;
+    }
+    if (ev.type === 'contact-saved' || ev.type === 'contact-assignment-changed'
+        || ev.type === 'agent-handoff' || ev.type === 'agent-resumed') {
+      // CRM/agent state changed for this conversation — refresh the header
+      // (assignee, tags) and the bot/human take-over status, throttled to 1.5s.
+      const now = Date.now();
+      if (now - lastCrmRefreshRef.current > 1500) {
+        lastCrmRefreshRef.current = now;
+        eventRefreshRef.current.header?.();
+        eventRefreshRef.current.agent?.();
+      }
     }
   }, [waNumber, contactNumber, refetchOnNew]);
   useServerEvents(onServerEvent);
@@ -375,6 +395,15 @@ export default function ChatWindow({ waNumber, contactNumber, onContactSaved }) 
     }
   };
 
+  // 24h-window status refetch, extracted so an inbound reply (SSE) can re-unlock
+  // the composer instantly instead of waiting for the 60s poll.
+  const refreshWindowStatus = useCallback(() => {
+    if (!waNumber || !contactNumber) return;
+    api.windowStatus(waNumber, contactNumber)
+      .then(ws => { setWindowStatus(ws); windowFetchedAt.current = Date.now(); })
+      .catch(() => {});
+  }, [waNumber, contactNumber]);
+
   useEffect(() => {
     if (!waNumber || !contactNumber) return;
     setOptimisticMessages([]);
@@ -396,16 +425,32 @@ export default function ChatWindow({ waNumber, contactNumber, onContactSaved }) 
       .catch(() => setBusinessAvatarUrl(null));
   }, [waNumber]);
 
-  // Re-check window status every 60s (the window may open or close while open)
+  // Re-check window status every 60s (expiry safety net — SSE handles re-opens).
   useEffect(() => {
     if (!waNumber || !contactNumber) return;
-    const t = setInterval(() => {
-      api.windowStatus(waNumber, contactNumber)
-        .then(ws => { setWindowStatus(ws); windowFetchedAt.current = Date.now(); })
-        .catch(() => {});
-    }, 60000);
+    const t = setInterval(refreshWindowStatus, 60000);
     return () => clearInterval(t);
+  }, [waNumber, contactNumber, refreshWindowStatus]);
+
+  // Bot/human take-over status refetch (used on agent-handoff / agent-resumed SSE).
+  const refreshAgentStatus = useCallback(() => {
+    if (!waNumber || !contactNumber) return;
+    api.agentConversation?.status?.(waNumber, contactNumber)?.then(setAgentConv, () => {});
   }, [waNumber, contactNumber]);
+
+  // Fire a "typing…" indicator to the customer as the agent composes. Client
+  // throttle (20s) matches the server side and Meta's ~25s bubble lifetime — no
+  // point spamming. Only sent while the 24h window is open (Meta rejects it
+  // otherwise). Best-effort: failures are swallowed.
+  const lastTypingAt = useRef(0);
+  const notifyTyping = useCallback(() => {
+    if (!waNumber || !contactNumber) return;
+    if (!windowStatus?.canSendFreeForm) return;
+    const now = Date.now();
+    if (now - lastTypingAt.current < 20000) return;
+    lastTypingAt.current = now;
+    api.typing(waNumber, contactNumber).catch(() => {});
+  }, [waNumber, contactNumber, windowStatus]);
 
   // Tick the countdown every second so the banner updates without waiting for a server poll
   useEffect(() => {
@@ -695,6 +740,13 @@ export default function ChatWindow({ waNumber, contactNumber, onContactSaved }) 
   useEffect(() => {
     refreshContactName();
   }, [refreshContactName]);
+
+  // Keep the SSE handler's refreshers current (defined across the component).
+  eventRefreshRef.current = {
+    window: refreshWindowStatus,
+    header: refreshContactName,
+    agent: refreshAgentStatus,
+  };
 
   // Reset on number/contact change
   useEffect(() => {
@@ -1551,7 +1603,7 @@ export default function ChatWindow({ waNumber, contactNumber, onContactSaved }) 
           ) : (
             <input
               value={composerText}
-              onChange={e => setComposerText(e.target.value)}
+              onChange={e => { setComposerText(e.target.value); notifyTyping(); }}
               onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
               placeholder={
                 audioBlob ? 'Voice ready — click send' :

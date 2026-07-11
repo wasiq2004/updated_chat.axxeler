@@ -13,6 +13,7 @@ const storage = require('../util/pgStorage');
 const { syncMediaToAccount } = require('./mediaLibrary');
 const { assertWaAccess, assertContactAccess } = require('../middleware/access');
 const { checkLimit } = require('../services/entitlements');
+const { showTyping } = require('../services/typingIndicator');
 const { isAdmin } = require('../permissions');
 const { canonicalizeMime, chatKindFor, CHAT_TYPES_MSG } = require('../util/metaMime');
 const ExcelJS = require('exceljs');
@@ -901,6 +902,27 @@ router.get('/messages/window-status', async (req, res) => {
   } catch (err) {
     console.error('[messages] window-status error:', err.message);
     res.status(500).json({ error: 'Failed to compute window status' });
+  }
+});
+
+/**
+ * POST /messages/typing
+ * Body: { waNumber, contactNumber }
+ * Shows a "typing…" indicator to the customer while an agent composes a reply.
+ * Best-effort and throttled server-side; always returns 200 so the composer
+ * never has to handle failures. No-op outside the 24h window.
+ */
+router.post('/messages/typing', async (req, res) => {
+  try {
+    const { waNumber, contactNumber } = req.body || {};
+    if (!waNumber || !contactNumber) {
+      return res.status(400).json({ error: 'waNumber and contactNumber required' });
+    }
+    const sent = await showTyping({ waNumber, contactNumber });
+    res.json({ ok: true, sent });
+  } catch {
+    // Cosmetic feature — never surface an error to the composer.
+    res.json({ ok: true, sent: false });
   }
 });
 

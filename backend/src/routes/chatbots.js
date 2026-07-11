@@ -3,16 +3,7 @@ const router = express.Router();
 const pool = require('../db');
 const { requirePermission, scopeClause, orgScope } = require('../middleware/access');
 
-/**
- * Graph-preserving config sanitizer. The engine executes the full node graph
- * (trigger/message/condition/delay/action/handoff/ai/api/subflow), so saving
- * must NOT collapse flows to a linear chain — branching (condition yes/no) and
- * every implemented node type survive persistence. This only removes garbage:
- *   - non-object nodes / nodes without an id, duplicate ids (first wins),
- *   - nodes of unknown type,
- *   - edges that don't connect two existing nodes.
- * Idempotent and safe on every save.
- */
+
 const VALID_NODE_TYPES = new Set([
   'trigger', 'message', 'condition', 'delay', 'action',
   'handoff', 'ai', 'api', 'subflow',
@@ -24,17 +15,27 @@ function sanitizeConfig(config) {
 
   const seen = new Set();
   const nodes = [];
+  let triggerSeen = false;
   for (const n of rawNodes) {
     if (!n || typeof n !== 'object' || n.id == null) continue;
     if (!VALID_NODE_TYPES.has(n.type)) continue;
     if (seen.has(n.id)) continue;
+    if (n.type === 'trigger') {
+      if (triggerSeen) continue; // one trigger max — first wins
+      triggerSeen = true;
+    }
     seen.add(n.id);
     nodes.push(n);
   }
 
-  const edges = rawEdges.filter(e =>
-    e && typeof e === 'object' && seen.has(e.from) && seen.has(e.to) && e.from !== e.to
-  );
+  const edgeKeys = new Set();
+  const edges = rawEdges.filter(e => {
+    if (!e || typeof e !== 'object' || !seen.has(e.from) || !seen.has(e.to) || e.from === e.to) return false;
+    const key = `${e.from}|${e.to}|${e.fromHandle || 'default'}`;
+    if (edgeKeys.has(key)) return false; // duplicate edge
+    edgeKeys.add(key);
+    return true;
+  });
 
   return { ...config, nodes, edges };
 }
@@ -347,4 +348,5 @@ router.post('/executions/:id/cancel', requirePermission('chatbot-builder'), asyn
   }
 });
 
-module.exports = { router, sanitizeConfig };
+// sanitizeToLinear kept as an alias for any legacy import (same behavior now).
+module.exports = { router, sanitizeConfig, sanitizeToLinear: sanitizeConfig };

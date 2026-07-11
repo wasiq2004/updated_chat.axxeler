@@ -33,7 +33,10 @@ export default function ContactList({ waNumber, width = 380, selectedContact, on
   // Throttled so a broadcast (many rows at once) triggers only a few refetches.
   const throttledRefetch = useThrottledCallback(refetch, 1500);
   const onServerEvent = useCallback((ev) => {
-    if (ev.type !== 'message-new') return;
+    // A new message, or any CRM/agent state change (assignment, tags, handoff),
+    // can alter the list's ordering, unread badges or assignee — refresh on all.
+    const LIVE = ['message-new', 'contact-saved', 'contact-assignment-changed', 'agent-handoff', 'agent-resumed'];
+    if (!LIVE.includes(ev.type)) return;
     const digits = (s) => String(s || '').replace(/\D/g, '');
     if (!waNumber || digits(ev.data?.waNumber) === digits(waNumber)) throttledRefetch();
   }, [waNumber, throttledRefetch]);

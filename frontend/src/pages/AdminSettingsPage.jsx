@@ -1249,6 +1249,7 @@ const FEATURE_PAGES = [
   { id: 'bulk-message', label: 'Bulk Message' },
   { id: 'template-builder', label: 'Template Builder' },
   { id: 'chatbot-builder', label: 'Automations' },
+  { id: 'follow-ups', label: 'Follow-ups' },
   { id: 'media-library', label: 'Media' },
 ];
 // Mirror of backend permissions.js ROLE_PAGE_DEFAULTS (operational subset only),
@@ -1522,15 +1523,40 @@ function UsersTab({ currentUser }) {
 
             {/* Per-user feature access. Admins always have everything, so the
                 toggles only apply to non-admin roles. */}
-            {form.role !== 'admin' && (
+            {form.role === 'admin' ? (
+              <div style={{
+                marginBottom: 14, padding: '10px 12px', borderRadius: 9,
+                border: `1px solid ${C.border}`, background: 'var(--c-hover)',
+                fontSize: 12.5, color: C.textSecondary,
+              }}>
+                Admins have full access to every part of the workspace — there are no per-page toggles.
+              </div>
+            ) : (
               <div style={{ marginBottom: 14 }}>
-                <label style={labelStyle}>Feature access</label>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <label style={labelStyle}>Feature access</label>
+                  {(() => {
+                    const defaults = defaultEnabledFor(form.role);
+                    const current = form.enabledPages || [];
+                    const differs = defaults.length !== current.length
+                      || defaults.some(id => !current.includes(id));
+                    return differs ? (
+                      <button type="button" onClick={() => changeRole(form.role)} style={{
+                        background: 'transparent', border: 'none', color: C.primary,
+                        fontSize: 11.5, fontWeight: 700, cursor: 'pointer', fontFamily: FONT, padding: 0,
+                      }}>Reset to defaults</button>
+                    ) : null;
+                  })()}
+                </div>
                 <div style={{ fontSize: 11.5, color: C.textMuted, marginBottom: 8 }}>
                   Enable the parts of the workspace this user can use.
+                  <span style={{ opacity: 0.85 }}> Badges show where this differs from the role default.</span>
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
                   {FEATURE_PAGES.map(f => {
                     const on = (form.enabledPages || []).includes(f.id);
+                    const isDefault = defaultEnabledFor(form.role).includes(f.id);
+                    const badge = on && !isDefault ? 'EXTRA' : (!on && isDefault ? 'REMOVED' : null);
                     return (
                       <label key={f.id} style={{
                         display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
@@ -1539,7 +1565,17 @@ function UsersTab({ currentUser }) {
                         background: on ? `${C.primary}10` : 'var(--c-cardBg)',
                         color: C.text, fontWeight: 600,
                       }}>
-                        <span>{f.label}</span>
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          {f.label}
+                          {badge && (
+                            <span style={{
+                              fontSize: 9.5, fontWeight: 800, letterSpacing: '0.04em',
+                              padding: '1px 5px', borderRadius: 5,
+                              color: badge === 'EXTRA' ? '#0a7d33' : '#b4341f',
+                              background: badge === 'EXTRA' ? '#0a7d3318' : '#b4341f18',
+                            }}>{badge}</span>
+                          )}
+                        </span>
                         <Toggle checked={on} onChange={() => togglePage(f.id)} />
                       </label>
                     );

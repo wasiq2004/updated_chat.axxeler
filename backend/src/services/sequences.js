@@ -73,14 +73,23 @@ async function findSequence(ref, tenantId) {
 // Sends the due step of every active enrollment, then advances/completes it.
 // Respects contact subscription (unsubscribed contacts are skipped + ended).
 async function sweepDueEnrollments() {
+  // Claim due rows atomically (SKIP LOCKED → safe under multiple replicas) and
+  // bump next_send_at +10min on claim, so a crash mid-send just retries in 10
+  // minutes instead of being lost or hot-looping.
   const { rows: due } = await pool.query(
-    `SELECT e.id, e.sequence_id, e.wa_number, e.contact_number, e.next_step,
-            s.steps, s.is_active
-       FROM coexistence.sequence_enrollments e
-       JOIN coexistence.sequences s ON s.id = e.sequence_id
-      WHERE e.status = 'active' AND e.next_send_at <= NOW()
-      ORDER BY e.next_send_at
-      LIMIT 50`
+    `UPDATE coexistence.sequence_enrollments e
+        SET next_send_at = NOW() + INTERVAL '10 minutes', updated_at = NOW()
+       FROM (
+         SELECT id FROM coexistence.sequence_enrollments
+          WHERE status = 'active' AND next_send_at <= NOW()
+          ORDER BY next_send_at
+          LIMIT 50
+          FOR UPDATE SKIP LOCKED
+       ) claim
+       JOIN coexistence.sequences s ON TRUE
+      WHERE e.id = claim.id AND s.id = e.sequence_id
+      RETURNING e.id, e.sequence_id, e.wa_number, e.contact_number, e.next_step,
+                s.steps, s.is_active`
   );
   let sent = 0;
   for (const row of due) {

@@ -22,7 +22,12 @@ const router = Router();
 
 // Every event the stream forwards. Kept as a list so adding a new push event is
 // a one-liner here + a bus.emit() at the source.
-const FORWARDED_EVENTS = ['message-status', 'message-new'];
+const FORWARDED_EVENTS = [
+  'message-status', 'message-new',
+  // Live CRM/agent state so chat headers, contact lists and the composer update
+  // without a manual reload.
+  'contact-saved', 'contact-assignment-changed', 'agent-handoff', 'agent-resumed',
+];
 
 router.get('/events', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');

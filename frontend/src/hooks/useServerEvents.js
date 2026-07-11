@@ -1,6 +1,9 @@
 import { useEffect } from 'react';
 
-const SUBSCRIBED_EVENTS = ['message-status', 'message-new', 'hello'];
+const SUBSCRIBED_EVENTS = [
+  'message-status', 'message-new', 'hello',
+  'contact-saved', 'contact-assignment-changed', 'agent-handoff', 'agent-resumed',
+];
 
 export function useServerEvents(onEvent) {
   useEffect(() => {

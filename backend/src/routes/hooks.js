@@ -17,19 +17,19 @@ const publicRouter = Router();
 
 publicRouter.post('/hooks/automation/:secret', async (req, res) => {
   const secret = String(req.params.secret || '');
-  // Secrets are whsec_<24+ hex> — refuse trivially short paths outright.
-  if (!/^whsec_[A-Za-z0-9_-]{16,}$/.test(secret)) return res.status(404).json({ error: 'Not found' });
+  // Secrets are whsec_-prefixed or bare hex, 16+ chars — refuse short paths outright.
+  if (!/^(whsec_)?[A-Za-z0-9_-]{16,}$/.test(secret)) return res.status(404).json({ error: 'Not found' });
 
   const client = await pool.connect();
   try {
-    // Find the active automation whose Webhook trigger holds this secret.
+    // Find the active automation whose webhook/apiEvent trigger holds this secret.
     const { rows: automations } = await client.query(
       `SELECT id, name, status, trigger_type, config FROM coexistence.chatbots WHERE status = 'active'`
     );
     let automation = null, triggerNode = null;
     for (const a of automations) {
       const t = ((a.config || {}).nodes || []).find(n => n.type === 'trigger');
-      if (t && (t.triggerKind === 'webhook') && t.webhookSecret === secret) {
+      if (t && (t.triggerKind === 'webhook' || t.triggerKind === 'apiEvent') && t.webhookSecret === secret) {
         automation = a; triggerNode = t; break;
       }
     }
@@ -38,7 +38,17 @@ publicRouter.post('/hooks/automation/:secret', async (req, res) => {
     const payload = (req.body && typeof req.body === 'object') ? req.body : {};
     const contactNumber = String(payload.contact_phone || payload.phone || '').replace(/\D/g, '');
     if (!contactNumber) {
-      return res.status(400).json({ error: 'Payload must include contact_phone (E.164 or digits) so the flow knows which contact to run for.' });
+      return res.status(400).json({ error: 'Payload must include phone / contact_phone (E.164 or digits) so the flow knows which contact to run for.' });
+    }
+
+    // apiEvent triggers only fire for their configured event type. The payload
+    // may name it under event | event_type | eventType | type.
+    if (triggerNode.triggerKind === 'apiEvent') {
+      const wantEvent = String(triggerNode.eventType || '').trim().toLowerCase();
+      const gotEvent = String(payload.event ?? payload.event_type ?? payload.eventType ?? payload.type ?? '').trim().toLowerCase();
+      if (wantEvent && gotEvent !== wantEvent) {
+        return res.json({ ok: true, skipped: `event "${gotEvent || '(none)'}" does not match trigger "${wantEvent}"` });
+      }
     }
 
     // Resolve the business number the flow should send from: the trigger's

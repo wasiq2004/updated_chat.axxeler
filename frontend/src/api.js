@@ -297,6 +297,9 @@ export const api = {
     req(`/messages/window-status?waNumber=${encodeURIComponent(waNumber)}&contactNumber=${encodeURIComponent(contactNumber)}`),
   markRead: (waNumber, contactNumber) =>
     req('/messages/mark-read', { method: 'POST', body: JSON.stringify({ waNumber, contactNumber }) }),
+  // Show a "typing…" indicator to the customer. Best-effort; server throttles.
+  typing: (waNumber, contactNumber) =>
+    req('/messages/typing', { method: 'POST', body: JSON.stringify({ waNumber, contactNumber }) }),
   // Emoji reaction to a message (empty emoji removes it).
   react: (fromNumber, toNumber, messageId, emoji) =>
     req('/messages/react', { method: 'POST', body: JSON.stringify({ fromNumber, toNumber, messageId, emoji }) }),

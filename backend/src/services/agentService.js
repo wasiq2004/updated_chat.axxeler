@@ -96,9 +96,9 @@ function sanitizeHandoffUserIds(raw) {
 
 // Comma-separated handoff trigger keywords → trimmed string (or null).
 function sanitizeKeywords(raw) {
-  if (raw == null) return null;
-  const s = String(raw).split(',').map(k => k.trim()).filter(Boolean).slice(0, 20).join(', ');
-  return s || null;
+  // MUST return '' (never null): agents.handoff_keywords is TEXT NOT NULL DEFAULT ''.
+  if (raw == null) return '';
+  return String(raw).split(',').map(k => k.trim()).filter(Boolean).slice(0, 20).join(', ');
 }
 
 function normalizeMediaGroups(raw) {

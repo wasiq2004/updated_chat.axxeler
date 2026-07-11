@@ -48,7 +48,7 @@ router.get('/sequences', async (req, res) => {
   }
 });
 
-router.post('/sequences', requirePermission('chatbot-builder'), async (req, res) => {
+router.post('/sequences', requirePermission('follow-ups'), async (req, res) => {
   try {
     const b = req.body || {};
     if (!b.name || !String(b.name).trim()) return res.status(400).json({ error: 'name is required' });
@@ -68,7 +68,7 @@ router.post('/sequences', requirePermission('chatbot-builder'), async (req, res)
   }
 });
 
-router.put('/sequences/:id', requirePermission('chatbot-builder'), async (req, res) => {
+router.put('/sequences/:id', requirePermission('follow-ups'), async (req, res) => {
   try {
     const b = req.body || {};
     const params = [
@@ -98,7 +98,7 @@ router.put('/sequences/:id', requirePermission('chatbot-builder'), async (req, r
   }
 });
 
-router.delete('/sequences/:id', requirePermission('chatbot-builder'), async (req, res) => {
+router.delete('/sequences/:id', requirePermission('follow-ups'), async (req, res) => {
   try {
     const params = [req.params.id];
     const guard = scopeClause(req, null, params);

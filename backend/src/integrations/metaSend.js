@@ -173,4 +173,22 @@ async function sendReaction({ accessToken, phoneNumberId, to, messageId, emoji }
   });
 }
 
-module.exports = { sendText, sendTemplate, sendMedia, sendInteractive, sendLocation, sendContacts, sendReaction, uploadMedia };
+/**
+ * Show a "typing…" indicator to the customer. Meta piggybacks this on the
+ * mark-as-read call: it requires the message_id of an inbound message from the
+ * customer and displays the bubble for up to ~25s (or until the reply arrives).
+ * There is no standalone typing endpoint, so callers must pass the last inbound
+ * message id. Best-effort: Meta rejects unknown/expired ids, so callers should
+ * swallow errors.
+ */
+async function sendTypingIndicator({ accessToken, phoneNumberId, messageId }) {
+  if (!messageId) throw new Error('sendTypingIndicator: messageId required');
+  return postJson(url(phoneNumberId), accessToken, {
+    messaging_product: 'whatsapp',
+    status: 'read',
+    message_id: String(messageId),
+    typing_indicator: { type: 'text' },
+  });
+}
+
+module.exports = { sendText, sendTemplate, sendMedia, sendInteractive, sendLocation, sendContacts, sendReaction, uploadMedia, sendTypingIndicator };

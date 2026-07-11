@@ -12,6 +12,7 @@ const googleSheets = require('../services/googleSheets');
 const { enqueueSend } = require('../queue/sendQueue');
 const { insertPendingRow } = require('../services/messageSender');
 const { getAccountWithToken } = require('../routes/whatsappAccounts');
+const { showTyping } = require('../services/typingIndicator');
 
 /**
  * Build the JSON-schema tool definitions surfaced to the LLM for one agent.
@@ -760,6 +761,13 @@ async function runAgent({ agentId, contactNumber, inboundMessageId, inboundText 
     console.warn(`[agentEngine] agent ${agent.id}: inbound ${inboundMessageId} had no usable text/transcript/image; skipping run.`);
     return { skipped: true, reason: 'nothing_actionable' };
   }
+
+  // Show the customer a "typing…" bubble while the model thinks. Fire-and-forget:
+  // it's cosmetic, throttled server-side, and must never delay or fail the run.
+  getAccountWithToken(agent.wa_account_id)
+    .then(acc => acc?.displayPhoneNumber
+      && showTyping({ waNumber: acc.displayPhoneNumber, contactNumber }))
+    .catch(() => {});
 
   // Open the run row immediately so a crash mid-loop is still visible in the UI.
   const { rows: runRows } = await pool.query(

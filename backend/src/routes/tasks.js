@@ -27,8 +27,9 @@ router.get('/tasks', async (req, res) => {
       where += ` AND t.status = $${params.length}`;
     }
     if (!isAdmin(req.user)) {
+      // Non-admins see their own tasks plus unassigned ones (anyone can pick those up).
       params.push(req.user.id);
-      where += ` AND t.assigned_user_id = $${params.length}`;
+      where += ` AND (t.assigned_user_id = $${params.length} OR t.assigned_user_id IS NULL)`;
     }
     const { rows } = await pool.query(
       `SELECT t.*, u.display_name AS assignee_name

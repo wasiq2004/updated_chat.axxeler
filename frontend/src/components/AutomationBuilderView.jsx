@@ -1,8 +1,50 @@
 import React, { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo } from "react";
+import QRCode from "qrcode";
 import { api } from "../api.js";
 import AutomationExecutions from "./AutomationExecutions.jsx";
 import SearchableSelect from "./SearchableSelect.jsx";
 import { maskPhone, downloadJson, slugifyName } from "../constants.js";
+
+// Renders a scannable QR of a wa.me link and offers an SVG download. Used by the
+// wa.me Link and QR Scan trigger editors. phone defaults to the connected account.
+function QrPreview({ phone, text, label = "QR code" }) {
+  const [svg, setSvg] = React.useState("");
+  const cleanPhone = String(phone || "").replace(/[^\d]/g, "");
+  const waUrl = `https://wa.me/${cleanPhone}${text ? `?text=${encodeURIComponent(text)}` : ""}`;
+  React.useEffect(() => {
+    let alive = true;
+    if (!cleanPhone) { setSvg(""); return; }
+    QRCode.toString(waUrl, { type: "svg", margin: 1, width: 148 })
+      .then(s => { if (alive) setSvg(s); })
+      .catch(() => { if (alive) setSvg(""); });
+    return () => { alive = false; };
+  }, [waUrl, cleanPhone]);
+  const download = () => {
+    if (!svg) return;
+    const blob = new Blob([svg], { type: "image/svg+xml" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `${slugifyName(label)}-qr.svg`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+  if (!cleanPhone) {
+    return <div style={{ fontSize:11, color:"var(--c-textMuted)", padding:"10px 0" }}>Connect a WhatsApp number to generate a scannable QR.</div>;
+  }
+  return (
+    <div style={{ display:"flex", alignItems:"center", gap:14 }}>
+      <div style={{ width:112, height:112, background:"#fff", borderRadius:10, padding:6, flexShrink:0, border:"1px solid var(--c-border)" }}
+        dangerouslySetInnerHTML={{ __html: svg }} />
+      <div style={{ flex:1, minWidth:0 }}>
+        <div style={{ fontSize:10.5, color:"var(--c-textSecondary)", fontFamily:"'Geist Mono'", wordBreak:"break-all", lineHeight:1.5, marginBottom:8 }}>{waUrl}</div>
+        <button onClick={download} disabled={!svg} style={{
+          fontSize:11.5, fontWeight:600, fontFamily:"'Manrope'", padding:"6px 12px", borderRadius:8,
+          border:"1px solid var(--c-border)", background:"var(--c-cardBg)", color:"var(--c-text)", cursor: svg ? "pointer" : "default",
+        }}>Download SVG</button>
+      </div>
+    </div>
+  );
+}
 
 // Automation Builder — single-file React JSX (Manrope + Geist Mono, inline styles).
 
@@ -394,7 +436,7 @@ const Alert = ({ kind, children, style }) => {
    ══════════════════════════════════════════════════════════════════════ */
 
 const NT = {
-  trigger: { bg:"rgba(239,68,68,.16)", border:"rgba(239,68,68,.34)", color:"#DC2626", accent:"#DC2626", label:"TRIGGER",       icon:IC.zap },
+  trigger: { bg:"rgba(226,38,53,.16)", border:"rgba(226,38,53,.34)", color:"#E22635", accent:"#E22635", label:"TRIGGER",       icon:IC.zap },
   message: { bg:"rgba(96,165,250,.16)", border:"rgba(96,165,250,.34)", color:"#2563EB", accent:"#2563EB", label:"MESSAGE",       icon:IC.msg },
   condition:{ bg:"rgba(245,158,11,.16)", border:"rgba(245,158,11,.34)", color:"#D97706", accent:"#D97706", label:"CONDITION",     icon:IC.branch },
   action:  { bg:"rgba(45,212,191,.16)", border:"rgba(45,212,191,.34)", color:"#2DD4BF", accent:"#2DD4BF", label:"ACTION",        icon:IC.tag },
@@ -531,7 +573,7 @@ export const makeNode = (type, x, y, id, templates) => {
   if (type === "condition") return { ...base, matchMode: "all", rules: [] };
   if (type === "action") return { ...base, actions: [] };
   if (type === "delay") return { ...base, delayMode: "duration", waitValue: "10", waitUnit: "minutes", useContactTz: false };
-  if (type === "api") return { ...base, method: "POST", url: "", apiHeaders: [], apiBody: "", respPath: "", respField: "", onError: "continue" };
+  if (type === "api") return { ...base, method: "POST", apiUrl: "", headers: [], body: "", responsePath: "", saveToField: "", onError: "continue" };
   if (type === "handoff") return { ...base, assignMode: "specific", assigned: [], priority: "high", slaValue: "15", slaUnit: "minutes", internalNote: "", notify: { wa:true, email:true, task:false } };
   if (type === "ai") return { ...base, aiTask: "lead_qualification", aiGoal: "", aiContext: "", aiSaveTo: "", aiFallback: "fallback_message", fallbackTemplateId: "" };
   if (type === "subflow") return { ...base, flowId: "", waitMode: "await" };
@@ -981,6 +1023,18 @@ const BLOCK_GROUPS = [
   { title:"Triggers", color:C.brand, items:[
     { name:"Keyword Trigger",  type:"trigger", icon:IC.zap,   desc:"User sends a keyword",
       defaults:{ triggerKind:"keyword", keyword:"PRICE", matchType:"exact", caseSensitive:false, summary:"Trigger when contact sends a specific keyword" } },
+    { name:"Any Message", type:"trigger", icon:IC.msg, desc:"Every inbound message",
+      defaults:{ triggerKind:"anyMessage", skipIfInFlow:true, summary:"Trigger on any inbound message" } },
+    { name:"New Contact", type:"trigger", icon:IC.contacts, desc:"First-time message",
+      defaults:{ triggerKind:"newContact", onlyFirstEver:true, summary:"Trigger when a new contact first messages" } },
+    { name:"wa.me Link", type:"trigger", icon:IC.pin, desc:"Contact opens a click-to-chat link",
+      defaults:{ triggerKind:"link", trackingCode:"", summary:"Trigger from a wa.me link scan" } },
+    { name:"QR Scan", type:"trigger", icon:IC.qr, desc:"Contact scans a printed QR",
+      defaults:{ triggerKind:"qr", prefilledMsg:"", summary:"Trigger from a QR code scan" } },
+    { name:"Tag Applied", type:"trigger", icon:IC.tag, desc:"A tag is added/removed",
+      defaults:{ triggerKind:"tagApplied", tag:"", tagDirection:"added", fireOncePerTag:true, summary:"Trigger when a tag changes on a contact" } },
+    { name:"Incoming Webhook", type:"trigger", icon:IC.api, desc:"External system POSTs to your URL",
+      defaults:{ triggerKind:"webhook", summary:"Trigger from an inbound webhook" } },
   ]},
   { title:"Messages", color:C.blue, items:[
     { name:"Send Message", type:"message", icon:IC.msg,   desc:"Send a WhatsApp message",
@@ -1004,22 +1058,20 @@ const BLOCK_GROUPS = [
     { name:"Clear Custom Field", type:"action", icon:IC.cog, desc:"Clear a contact field",
       defaults:{ actions:[{ kind:"Clear Custom Field", value:"" }], summary:"Clear a custom field on the contact" } },
   ]},
-  { title:"Team", color:C.text3, items:[
-    { name:"Human Handoff", type:"handoff", icon:IC.agent, desc:"Assign the chat to a team member and stop the bot" },
-  ]},
-  { title:"Integrations", color:C.text3, items:[
-    { name:"API Request", type:"api", icon:IC.api, desc:"Call an external HTTP API / webhook" },
+  { title:"API & Integrations", color:C.text3, items:[
+    { name:"API call", type:"api", icon:IC.api, desc:"Call an external HTTP API / webhook" },
   ]},
   { title:"AI", color:C.text3, items:[
-    { name:"AI Step", type:"ai", icon:IC.ai, desc:"Task-bound AI reply (Meta-compliant)" },
+    { name:"AI step", type:"ai", icon:IC.ai, desc:"Task-bound AI reply (Meta-compliant)" },
   ]},
   { title:"Workflows", color:C.text3, items:[
+    { name:"Human Handoff", type:"handoff", icon:IC.agent, desc:"Assign the chat to a team member and stop the bot" },
     { name:"Trigger Another Flow", type:"subflow", icon:IC.flow, desc:"Run another automation from here" },
   ]},
 ];
 
 const BlockLibrary = ({ onAddBlock }) => {
-  const [openG, setOpenG] = useState({ Triggers:true, Messages:true, Logic:true, Actions:true, Team:true, Integrations:true, AI:true, Workflows:true });
+  const [openG, setOpenG] = useState({ Triggers:true, Messages:true, Logic:true, Actions:true, "API & Integrations":true, AI:true, Workflows:true });
   const [q, setQ] = useState("");
   return (
     <aside style={{ width:236, borderRight:`1px solid ${C.cardBorder}`, background:C.cardBg, display:"flex", flexDirection:"column", flexShrink:0 }}>
@@ -1814,28 +1866,28 @@ const SettingsPanel = ({ node, nodes=[], edges=[], onUpdateNode=()=>{}, onDelete
   }
   else if (node.type === "api") {
     const method = node.method || "POST";
-    const url = node.url !== undefined ? node.url : "";
-    const apiHeaders = Array.isArray(node.apiHeaders) ? node.apiHeaders : [];
-    const apiBody = node.apiBody !== undefined ? node.apiBody : "";
+    const apiUrl = node.apiUrl !== undefined ? node.apiUrl : (node.url || "");
+    const headers = Array.isArray(node.headers) ? node.headers : [];
+    const body = node.body !== undefined ? node.body : (node.apiBody || "");
     const onErr = node.onError || "continue";
     const bodyless = method === "GET" || method === "DELETE";
-    const setHeader = (i, patch) => onUpdateNode(node.id, n => { const h = [...(n.apiHeaders || [])]; h[i] = { ...h[i], ...patch }; return { ...n, apiHeaders: h }; });
-    const addHeader = () => onUpdateNode(node.id, n => ({ ...n, apiHeaders: [...(n.apiHeaders || []), { k: "", v: "" }] }));
-    const delHeader = (i) => onUpdateNode(node.id, n => ({ ...n, apiHeaders: (n.apiHeaders || []).filter((_, j) => j !== i) }));
+    const setHeader = (i, patch) => onUpdateNode(node.id, n => { const h = [...(Array.isArray(n.headers) ? n.headers : [])]; h[i] = { ...h[i], ...patch }; return { ...n, headers: h }; });
+    const addHeader = () => onUpdateNode(node.id, n => ({ ...n, headers: [...(Array.isArray(n.headers) ? n.headers : []), { k: "", v: "" }] }));
+    const delHeader = (i) => onUpdateNode(node.id, n => ({ ...n, headers: (Array.isArray(n.headers) ? n.headers : []).filter((_, j) => j !== i) }));
     content = (<>
       <Field label="Method & URL" hint="Variables like {{phone}} are resolved at run time.">
         <div style={{ display:"flex", gap:6 }}>
           <Select value={method} onChange={e=>onUpdateNode(node.id, { method: e.target.value })} style={{ width:92, fontFamily:"'Geist Mono'", fontWeight:700, color:C.brand }}>
             {["GET","POST","PUT","PATCH","DELETE"].map(m=><option key={m} value={m}>{m}</option>)}
           </Select>
-          <VarInput value={url} onChange={e=>onUpdateNode(node.id, { url: e.target.value })} placeholder="https://api.example.com/leads" style={{ flex:1, fontFamily:"'Geist Mono'", fontSize:11 }}/>
+          <VarInput value={apiUrl} onChange={e=>onUpdateNode(node.id, { apiUrl: e.target.value })} placeholder="https://api.example.com/leads" style={{ flex:1, fontFamily:"'Geist Mono'", fontSize:11 }}/>
         </div>
-        {url && !/^https?:\/\//i.test(url) && <div style={{ fontSize:10, color:C.red, marginTop:5, fontWeight:600 }}>URL must start with http:// or https://</div>}
+        {apiUrl && !/^https?:\/\//i.test(apiUrl) && <div style={{ fontSize:10, color:C.red, marginTop:5, fontWeight:600 }}>URL must start with http:// or https://</div>}
       </Field>
       <Field label="Headers">
         <div style={{ background:C.sectionBg, border:`1px solid ${C.innerBorder}`, borderRadius:8, padding:8 }}>
-          {apiHeaders.length === 0 && <div style={{ fontSize:10.5, color:C.text5, padding:"2px 4px 6px" }}>No headers.</div>}
-          {apiHeaders.map((h,i)=>(
+          {headers.length === 0 && <div style={{ fontSize:10.5, color:C.text5, padding:"2px 4px 6px" }}>No headers.</div>}
+          {headers.map((h,i)=>(
             <div key={i} style={{ display:"grid", gridTemplateColumns:"1fr 1.6fr 24px", gap:5, marginBottom:4 }}>
               <Input value={h.k || ""} onChange={e=>setHeader(i,{ k:e.target.value })} placeholder="Header" style={{ padding:"5px 8px", fontSize:10, fontFamily:"'Geist Mono'" }}/>
               <Input value={h.v || ""} onChange={e=>setHeader(i,{ v:e.target.value })} placeholder="Value" style={{ padding:"5px 8px", fontSize:10, fontFamily:"'Geist Mono'" }}/>
@@ -1847,14 +1899,14 @@ const SettingsPanel = ({ node, nodes=[], edges=[], onUpdateNode=()=>{}, onDelete
       </Field>
       {!bodyless && (
         <Field label="Body · JSON" hint="Sent as the request body. Use {{variables}}.">
-          <VarTextarea value={apiBody} onChange={e=>onUpdateNode(node.id, { apiBody: e.target.value })} placeholder={'{\n  "name": "{{first_name}}",\n  "phone": "{{phone}}"\n}'} style={{ fontFamily:"'Geist Mono'", fontSize:11, minHeight:110 }}/>
+          <VarTextarea value={body} onChange={e=>onUpdateNode(node.id, { body: e.target.value })} placeholder={'{\n  "name": "{{first_name}}",\n  "phone": "{{phone}}"\n}'} style={{ fontFamily:"'Geist Mono'", fontSize:11, minHeight:110 }}/>
         </Field>
       )}
-      <Field label="Save response to field (optional)" hint="Extract a value from the JSON response (e.g. $.id) and save it on the contact.">
+      <Field label="Save response to field (optional)" hint="Extract a value from the JSON response (e.g. $.data.id) and save it on the contact.">
         <div style={{ display:"flex", gap:6 }}>
-          <Input value={node.respPath || ""} onChange={e=>onUpdateNode(node.id, { respPath: e.target.value })} placeholder="$.id" style={{ flex:1, fontFamily:"'Geist Mono'", fontSize:11 }}/>
+          <Input value={node.responsePath || ""} onChange={e=>onUpdateNode(node.id, { responsePath: e.target.value })} placeholder="$.data.id" style={{ flex:1, fontFamily:"'Geist Mono'", fontSize:11 }}/>
           <span style={{ alignSelf:"center", fontSize:12, color:C.text5 }}>→</span>
-          <Select value={node.respField || ""} onChange={e=>onUpdateNode(node.id, { respField: e.target.value })} style={{ flex:1 }}>
+          <Select value={node.saveToField || ""} onChange={e=>onUpdateNode(node.id, { saveToField: e.target.value })} style={{ flex:1 }}>
             <option value="">— Select a field —</option>
             {fieldNames.map(f => <option key={f} value={f}>{f}</option>)}
           </Select>
@@ -2155,7 +2207,8 @@ const SettingsPanel = ({ node, nodes=[], edges=[], onUpdateNode=()=>{}, onDelete
     }
 
     else if (tk === "link") {
-      const phone        = node.businessPhone  || "919876543210";
+      const acctPhone = (whatsappAccounts[0]?.displayPhoneNumber || "").replace(/[^\d]/g, "");
+      const phone        = node.businessPhone  || acctPhone || "";
       const trackingCode = node.trackingCode   || "WEB_HOMEPAGE_HERO";
       const linkSource   = node.linkSource     || "Website";
       const prefilledMsg = node.prefilledMsg   || "Hi, I'd like to know more";
@@ -2200,13 +2253,17 @@ const SettingsPanel = ({ node, nodes=[], edges=[], onUpdateNode=()=>{}, onDelete
           </div>
           <div style={{ fontSize:10, color:C.muted, marginTop:5, fontWeight:500 }}>Copy this URL into your website CTA, ads, or email signature.</div>
         </Field>
+        <Field label="Scannable QR">
+          <QrPreview phone={phone} text={`${prefilledMsg} · ${trackingCode}`} label={trackingCode || "walink"} />
+        </Field>
       </>);
     }
 
     else if (tk === "qr") {
+      const acctPhone = (whatsappAccounts[0]?.displayPhoneNumber || "").replace(/[^\d]/g, "");
       const qrLabel    = node.qrLabel    || "FLYER_DIWALI_2025";
       const qrLocation = node.qrLocation || "Anna Nagar billboard";
-      const phone      = node.businessPhone || "919876543210";
+      const phone      = node.businessPhone || acctPhone || "";
       const prefilledMsg = node.prefilledMsg || `Scanned from ${qrLocation}`;
       const labelOk = !!(qrLabel && qrLabel.trim());
       kindFields = (<>
@@ -2238,14 +2295,8 @@ const SettingsPanel = ({ node, nodes=[], edges=[], onUpdateNode=()=>{}, onDelete
         <Field label="Pre-filled message">
           <Input value={prefilledMsg} onChange={(e)=>onUpdateNode(node.id, { prefilledMsg: e.target.value })}/>
         </Field>
-        <Field label="QR code preview">
-          <div style={{ background:C.sectionBg, border:`1px solid ${C.innerBorder}`, borderRadius:10, padding:14, textAlign:"center" }}>
-            <div style={{ width:104, height:104, margin:"0 auto 8px", background:"#fff", border:`1px solid ${C.cardBorder}`, borderRadius:6, padding:6, display:"flex", alignItems:"center", justifyContent:"center" }}>
-              <div style={{ width:"100%", height:"100%", backgroundImage:`radial-gradient(circle at 18% 18%, #111 0, #111 8%, transparent 8%), radial-gradient(circle at 82% 18%, #111 0, #111 8%, transparent 8%), radial-gradient(circle at 18% 82%, #111 0, #111 8%, transparent 8%), linear-gradient(45deg, transparent 0 45%, #111 45% 55%, transparent 55%), linear-gradient(135deg, transparent 0 30%, #111 30% 40%, transparent 40% 60%, #111 60% 70%, transparent 70%)`, backgroundSize:"100% 100%", borderRadius:4 }}/>
-            </div>
-            <div style={{ fontSize:9, fontFamily:"'Geist Mono'", fontWeight:700, color:C.text3 }}>{qrLabel}</div>
-            <Btn kind="ghost" size="sm" icon={IC.copy(11)} style={{ marginTop:8 }}>Download SVG</Btn>
-          </div>
+        <Field label="Scannable QR" hint="Print this QR. Scanning it opens WhatsApp with the pre-filled message, which triggers this flow.">
+          <QrPreview phone={phone} text={prefilledMsg} label={qrLabel || "qr"} />
         </Field>
       </>);
     }
@@ -2394,17 +2445,34 @@ const SettingsPanel = ({ node, nodes=[], edges=[], onUpdateNode=()=>{}, onDelete
           </Select>
           {!eventOk && <div style={{ fontSize:10, color:C.red, marginTop:5, fontWeight:600 }}>Pick the event this trigger should listen for</div>}
         </Field>
-        <Field label="Filter (optional)" hint="Only fire when the event matches additional criteria.">
-          <Input placeholder="e.g. payment.amount > 100000" style={{ fontFamily:"'Geist Mono'", fontSize:11 }}/>
-        </Field>
-        <Alert kind="info">{
-          integration === "razorpay"   ? "Razorpay webhook configured · 1,820 events last 7d" :
-          integration === "stripe"     ? "Stripe webhook configured · 280 events last 7d" :
-          integration === "calendly"   ? "Calendly is connected · OAuth token valid" :
-          integration === "googleforms"? "Google Forms is connected · 4 forms watched" :
-          integration === "makecom"    ? "Make.com webhook configured" :
-                                         "Zapier webhook configured"
-        }</Alert>
+        {(() => {
+          const secret = node.webhookSecret || "";
+          const origin = typeof window !== "undefined" ? window.location.origin : "";
+          const url = secret ? `${origin}/api/hooks/automation/${secret}` : "Generate a secret to get your URL";
+          const genSecret = () => {
+            const bytes = new Uint8Array(24);
+            (window.crypto || {}).getRandomValues ? window.crypto.getRandomValues(bytes) : bytes.forEach((_, i) => { bytes[i] = Math.floor(Math.random() * 256); });
+            const hex = Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join("");
+            onUpdateNode(node.id, { webhookSecret: `whsec_${hex}` });
+          };
+          return (<>
+            <Field label="Your endpoint URL" hint={`Point the ${integration} webhook here. The trigger fires only for the "${eventType || 'selected'}" event (payload key event/event_type/eventType/type). Include contact_phone in the payload.`}>
+              <div style={{ display:"flex", gap:6 }}>
+                <Input value={url} readOnly style={{ fontFamily:"'Geist Mono'", fontSize:10, color:C.text3, background:C.sectionBg }}/>
+                <Btn kind="ghost" size="sm" icon={IC.copy(13)} disabled={!secret}
+                  onClick={()=>{ try { navigator.clipboard.writeText(url); } catch { /* ignore */ } }}>Copy</Btn>
+              </div>
+            </Field>
+            <Field label="Secret">
+              <div style={{ display:"flex", gap:6 }}>
+                <Input value={secret || "— none yet —"} readOnly style={{ fontFamily:"'Geist Mono'", fontSize:10, color:C.text3, background:C.sectionBg }}/>
+                <Btn kind="ghost" size="sm" onClick={genSecret}>{secret ? "Rotate" : "Generate"}</Btn>
+              </div>
+              {!secret && <div style={{ fontSize:10, color:C.red, marginTop:5, fontWeight:600 }}>Generate a secret — the trigger can't fire without one</div>}
+            </Field>
+            <Alert kind="info">Save the automation after generating. The event's top-level payload fields become {`{{variables}}`} downstream.</Alert>
+          </>);
+        })()}
       </>);
     }
 
@@ -2439,6 +2507,7 @@ const SettingsPanel = ({ node, nodes=[], edges=[], onUpdateNode=()=>{}, onDelete
           <option value="qr">QR Scan — contact scans a printed QR code</option>
           <option value="tagApplied">Tag Applied — a tag is added/removed on a contact</option>
           <option value="webhook">Webhook — an external system POSTs to your URL</option>
+          <option value="apiEvent">Integration Event — a filtered event from an integration webhook</option>
         </Select>
       </Field>
 
@@ -2562,7 +2631,7 @@ const SettingsPanel = ({ node, nodes=[], edges=[], onUpdateNode=()=>{}, onDelete
       <Field label="Save AI output to field" style={{ marginTop:14 }}>
         <Select value={aiSaveTo} onChange={(e)=>onUpdateNode(node.id, { aiSaveTo: e.target.value })}>
           {fieldNames.map(f => <option key={f} value={f}>{f}</option>)}
-          <option value="__new__">+ New custom field</option>
+          <option value="__new__" disabled>+ New field → add in Admin Settings → Fields</option>
         </Select>
       </Field>
 
@@ -2755,7 +2824,7 @@ const SettingsPanel = ({ node, nodes=[], edges=[], onUpdateNode=()=>{}, onDelete
                   style={{ marginBottom: isSetKind ? 6 : 0, borderColor: fieldOk ? C.inputBorder : C.red }}>
                   <option value="">— Select a field —</option>
                   {fieldNames.map(fld => <option key={fld} value={fld}>{fld}</option>)}
-                  <option value="__new__">+ Create new field…</option>
+                  <option value="__new__" disabled>+ New field → add in Admin Settings → Fields</option>
                 </Select>
                 {isSetKind && (<>
                   <VarInput
@@ -4104,7 +4173,7 @@ const AutomationBuilderView = ({ automation, onBack, onSave, onToggleStatus, act
   const onDragMove = useCallback((e) => {
     const d = dragRef.current; if (!d) return;
     if (!d.moved) {
-      if (Math.hypot(e.clientX - d.startX, e.clientY - d.startY) < 3) return; // below threshold → still a click
+      if (Math.hypot(e.clientX - d.startX, e.clientY - d.startY) < 5) return; // below 5px → still a click
       d.moved = true;
     }
     const pos = screenToWorld(e.clientX, e.clientY);
@@ -4125,9 +4194,16 @@ const AutomationBuilderView = ({ automation, onBack, onSave, onToggleStatus, act
 
   const onDragUp = useCallback(() => {
     const d = dragRef.current;
-    // Record the FINAL positions (read via refs, never a stale closure) so the
-    // drag is undoable.
-    if (d && d.moved) pushHistoryRef.current(nodesRef.current, edgesRef.current);
+    if (d && d.moved) {
+      // A real drag — record the FINAL positions (via refs, never a stale
+      // closure) so the move is undoable.
+      pushHistoryRef.current(nodesRef.current, edgesRef.current);
+    } else if (d && !d.multi && !d.shift) {
+      // A stationary plain click (press-release, no 5px drag, no modifier) opens
+      // the node editor. Modifier-clicks only toggle multi-selection.
+      setSelectedId(d.id);
+      setDetailId(d.id);
+    }
     dragRef.current = null;
     dragStartStateRef.current = null;
     window.removeEventListener("mousemove", onDragMove);
@@ -4531,7 +4607,7 @@ const AutomationBuilderView = ({ automation, onBack, onSave, onToggleStatus, act
       )}
 
       {confirmOpen && (
-        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.35)", zIndex:80, display:"flex", alignItems:"center", justifyContent:"center" }} onClick={closeConfirm}>
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.35)", zIndex:400, display:"flex", alignItems:"center", justifyContent:"center" }} onClick={closeConfirm}>
           <div style={{ background:C.cardBg, borderRadius:12, padding:"24px", width:360, boxShadow:"0 20px 50px rgba(0,0,0,.2)" }} onClick={e=>e.stopPropagation()}>
             <div style={{ fontSize:16, fontWeight:700, color:C.text1, marginBottom:8 }}>Delete this block?</div>
             <div style={{ fontSize:13, color:C.text3, lineHeight:1.5, marginBottom:20 }}>

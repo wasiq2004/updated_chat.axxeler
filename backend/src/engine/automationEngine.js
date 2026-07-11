@@ -1,5 +1,6 @@
 const pool = require('../db');
 const { ssrfSafeFetch } = require('../util/ssrfGuard');
+const bus = require('../events');
 
 /* ══════════════════════════════════════════════════════════════════════
    Minimal Automation Execution Engine
@@ -808,9 +809,8 @@ async function executeDelayNode(client, executionId, node, context) {
 // Action kinds that don't have a real side-effect handler in this build.
 // We keep them as honest, accurately-labelled log entries rather than faking a
 // success — so the execution log tells the operator exactly what did NOT happen.
-const ACTION_STUB_NOTES = {
-  'Assign to Agent': 'Not applied — superseded by "Assign to BDA"; there is no team-member assignment column. Use Assign to BDA.',
-};
+// All 13 action kinds now have real handlers; kept for any future stubs.
+const ACTION_STUB_NOTES = {};
 
 async function executeActionNode(client, executionId, node, context) {
   const actions = node.actions || [];
@@ -1024,28 +1024,21 @@ async function executeActionNode(client, executionId, node, context) {
         results.push({ ...base, status: had ? 'applied' : 'skipped', field: { id: fieldId, name: fRows[0].name }, note: had ? 'Custom field cleared' : 'Field was already empty' });
 
       } else if (a.kind === 'Update Lead Score') {
-        // a.value is a point delta like "+10" / "-5" / "15". Stored in the
-        // contact's custom_fields under a "lead_score" field definition
-        // (auto-created on first use so the score shows in the CRM).
-        const delta = parseInt(resolveVariables(String(a.value || ''), context).replace(/[^-\d]/g, ''), 10);
-        if (Number.isNaN(delta)) { results.push({ ...base, status: 'error', error: 'value must be a number (e.g. +10, -5)' }); stepStatus = 'error'; continue; }
+        // a.value: "+10"/"-5" adjust the score; a bare "15" SETS it. Stored
+        // under the plain `lead_score` key in custom_fields (readable as
+        // {{lead_score}} and by condition rules).
+        const rawVal = resolveVariables(String(a.value || ''), context).trim();
+        const isDelta = /^[+-]/.test(rawVal);
+        const num = parseInt(rawVal.replace(/[^-\d]/g, ''), 10);
+        if (Number.isNaN(num)) { results.push({ ...base, status: 'error', error: 'value must be a number (e.g. +10, -5, 15)' }); stepStatus = 'error'; continue; }
         if (!waNumber || !contactNumber) { results.push({ ...base, status: 'error', error: 'context missing wa_number or contact_number' }); stepStatus = 'error'; continue; }
-        let { rows: fRows } = await client.query(
-          `SELECT id FROM coexistence.contact_field_definitions WHERE LOWER(name) = 'lead_score' LIMIT 1`
-        );
-        if (fRows.length === 0) {
-          ({ rows: fRows } = await client.query(
-            `INSERT INTO coexistence.contact_field_definitions (name, field_type) VALUES ('lead_score', 'number') RETURNING id`
-          ));
-        }
-        const fieldId = fRows[0].id;
         const { rows: cur } = await client.query(
           `SELECT custom_fields FROM coexistence.contacts WHERE wa_number = $1 AND contact_number = $2`,
           [waNumber, contactNumber]
         );
         const cf = { ...((cur[0] && cur[0].custom_fields) || {}) };
-        const next = (parseInt(cf[fieldId], 10) || 0) + delta;
-        cf[fieldId] = String(next);
+        const next = isDelta ? (parseInt(cf.lead_score, 10) || 0) + num : num;
+        cf.lead_score = String(next);
         await client.query(
           `INSERT INTO coexistence.contacts (wa_number, contact_number, custom_fields, updated_at, tenant_id, organization_id)
            VALUES ($1, $2, $3::jsonb, NOW(),
@@ -1058,22 +1051,61 @@ async function executeActionNode(client, executionId, node, context) {
         context.contact = context.contact || {};
         context.contact.custom_fields = cf;
         contactMutated = true;
-        results.push({ ...base, status: 'applied', delta, leadScore: next });
+        results.push({ ...base, status: 'applied', mode: isDelta ? 'adjust' : 'set', leadScore: next });
 
       } else if (a.kind === 'Subscribe Contact' || a.kind === 'Unsubscribe Contact') {
         if (!waNumber || !contactNumber) { results.push({ ...base, status: 'error', error: 'context missing wa_number or contact_number' }); stepStatus = 'error'; continue; }
         const subscribed = a.kind === 'Subscribe Contact';
+        // Dual write: the `subscribed` column (drives the sequence sweeper) AND
+        // custom_fields.subscribed = 'true'|'false' ({{subscribed}}, requireOptIn,
+        // condition rules).
+        const { rows: cur } = await client.query(
+          `SELECT custom_fields FROM coexistence.contacts WHERE wa_number = $1 AND contact_number = $2`,
+          [waNumber, contactNumber]
+        );
+        const cf = { ...((cur[0] && cur[0].custom_fields) || {}) };
+        cf.subscribed = subscribed ? 'true' : 'false';
         await client.query(
-          `INSERT INTO coexistence.contacts (wa_number, contact_number, subscribed, updated_at, tenant_id, organization_id)
+          `INSERT INTO coexistence.contacts (wa_number, contact_number, subscribed, custom_fields, updated_at, tenant_id, organization_id)
+           VALUES ($1, $2, $3, $4::jsonb, NOW(),
+             (SELECT tenant_id FROM coexistence.whatsapp_accounts WHERE regexp_replace(display_phone_number,'[^0-9]','','g') = regexp_replace($1,'[^0-9]','','g')),
+             (SELECT organization_id FROM coexistence.whatsapp_accounts WHERE regexp_replace(display_phone_number,'[^0-9]','','g') = regexp_replace($1,'[^0-9]','','g')))
+           ON CONFLICT (wa_number, contact_number) DO UPDATE
+             SET subscribed = EXCLUDED.subscribed, custom_fields = EXCLUDED.custom_fields, updated_at = NOW()`,
+          [waNumber, contactNumber, subscribed, JSON.stringify(cf)]
+        );
+        context.contact = context.contact || {};
+        context.contact.custom_fields = cf;
+        contactMutated = true;
+        results.push({ ...base, status: 'applied', subscribed, note: subscribed ? 'Contact subscribed' : 'Contact unsubscribed (drips stop)' });
+
+      } else if (a.kind === 'Assign to Agent') {
+        // a.value names a team member (display name, username, or email) —
+        // resolve to an active user and assign the conversation, same as
+        // Assign to BDA but looked up by name instead of id.
+        const who = resolveVariables(String(a.value || ''), context).trim();
+        if (!who) { results.push({ ...base, status: 'error', error: 'no team member named' }); stepStatus = 'error'; continue; }
+        if (!waNumber || !contactNumber) { results.push({ ...base, status: 'error', error: 'context missing wa_number or contact_number' }); stepStatus = 'error'; continue; }
+        const { rows: uRows } = await client.query(
+          `SELECT id, display_name, role FROM coexistence.z_chat_users
+            WHERE is_active <> FALSE
+              AND (LOWER(display_name) = LOWER($1) OR LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($1))
+            LIMIT 1`,
+          [who]
+        );
+        if (uRows.length === 0) { results.push({ ...base, status: 'error', error: `team member "${who}" not found or inactive` }); stepStatus = 'error'; continue; }
+        const u = uRows[0];
+        await client.query(
+          `INSERT INTO coexistence.contacts (wa_number, contact_number, assigned_user_id, updated_at, tenant_id, organization_id)
            VALUES ($1, $2, $3, NOW(),
              (SELECT tenant_id FROM coexistence.whatsapp_accounts WHERE regexp_replace(display_phone_number,'[^0-9]','','g') = regexp_replace($1,'[^0-9]','','g')),
              (SELECT organization_id FROM coexistence.whatsapp_accounts WHERE regexp_replace(display_phone_number,'[^0-9]','','g') = regexp_replace($1,'[^0-9]','','g')))
            ON CONFLICT (wa_number, contact_number) DO UPDATE
-             SET subscribed = EXCLUDED.subscribed, updated_at = NOW()`,
-          [waNumber, contactNumber, subscribed]
+             SET assigned_user_id = EXCLUDED.assigned_user_id, updated_at = NOW()`,
+          [waNumber, contactNumber, u.id]
         );
         contactMutated = true;
-        results.push({ ...base, status: 'applied', subscribed, note: subscribed ? 'Contact subscribed' : 'Contact unsubscribed (drips stop)' });
+        results.push({ ...base, status: 'applied', assignedTo: { id: u.id, displayName: u.display_name, role: u.role } });
 
       } else if (a.kind === 'Send Email') {
         const { sendMail, isMailerConfigured } = require('../util/mailer');
@@ -1119,6 +1151,12 @@ async function executeActionNode(client, executionId, node, context) {
     }
   }
 
+  // One live-update event per action node run (not per action) so open chat
+  // headers / contact lists refresh without a reload.
+  if (contactMutated && waNumber && contactNumber) {
+    try { bus.emit('contact-saved', { waNumber, contactNumber }); } catch { /* best-effort */ }
+  }
+
   return logStep(client, executionId, node, { actions, contact: { waNumber, contactNumber } }, { results }, stepStatus);
 }
 
@@ -1134,13 +1172,27 @@ async function executeHandoffNode(client, executionId, node, context) {
   const ids = Array.isArray(node.assigned) ? node.assigned.map(x => parseInt(x, 10)).filter(Boolean) : [];
   let assignee = null;
   if (ids.length) {
-    const { rows } = await client.query(
-      `SELECT id, display_name, email, role FROM coexistence.z_chat_users
-        WHERE id = ANY($1::bigint[]) AND is_active <> FALSE AND role IN ('bda_sales','admin')
-        ORDER BY array_position($1::bigint[], id) LIMIT 1`,
-      [ids]
-    );
-    assignee = rows[0] || null;
+    if ((node.assignMode || 'specific') === 'round-robin') {
+      // Least-loaded active user among the configured ids (fewest currently-
+      // assigned contacts); ties broken by the configured order.
+      const { rows } = await client.query(
+        `SELECT u.id, u.display_name, u.email, u.role,
+                (SELECT COUNT(*)::int FROM coexistence.contacts c WHERE c.assigned_user_id = u.id) AS load
+           FROM coexistence.z_chat_users u
+          WHERE u.id = ANY($1::bigint[]) AND u.is_active <> FALSE AND u.role IN ('bda_sales','admin')
+          ORDER BY load ASC, array_position($1::bigint[], u.id) LIMIT 1`,
+        [ids]
+      );
+      assignee = rows[0] || null;
+    } else {
+      const { rows } = await client.query(
+        `SELECT id, display_name, email, role FROM coexistence.z_chat_users
+          WHERE id = ANY($1::bigint[]) AND is_active <> FALSE AND role IN ('bda_sales','admin')
+          ORDER BY array_position($1::bigint[], id) LIMIT 1`,
+        [ids]
+      );
+      assignee = rows[0] || null;
+    }
   }
 
   let assignedContact = null;
@@ -1158,6 +1210,14 @@ async function executeHandoffNode(client, executionId, node, context) {
       [waNumber, contactNumber, assignee.id]
     );
     assignedContact = rows[0];
+    // Live UI updates: chat header/contact list refresh without a reload. The
+    // agent-handoff event doubles as the in-app note (notify.wa, default on).
+    try {
+      const evt = { waNumber, contactNumber, assignedUserId: assignee.id, assigneeName: assignee.display_name };
+      bus.emit('contact-saved', { waNumber, contactNumber });
+      bus.emit('contact-assignment-changed', evt);
+      if ((node.notify || {}).wa !== false) bus.emit('agent-handoff', evt);
+    } catch { /* SSE is best-effort */ }
   }
 
   // Deliver the configured notifications for real.
@@ -1419,14 +1479,15 @@ function extractJsonPath(obj, path) {
 // it onto the contact. onError: 'continue' (default) | 'retry' (3x) | 'exit'.
 async function executeAPINode(client, executionId, node, context) {
   const method = String(node.method || 'POST').toUpperCase();
-  const url = resolveVariables(String(node.url || node.apiUrl || node.endpoint || ''), context).trim();
+  // Canonical field is apiUrl; url/endpoint accepted for older saved nodes.
+  const url = resolveVariables(String(node.apiUrl || node.url || node.endpoint || ''), context).trim();
   const onError = node.onError || 'continue';
   const waNumber = context.trigger_data?.wa_number;
   const contactNumber = context.contact_number;
 
   const finishError = async (message, extra = {}) => {
     const step = await logStep(client, executionId, node, { method, url }, { error: message, ...extra }, 'error');
-    if (onError === 'exit') step.__endExecution = true;
+    if (onError === 'exit') { step.__endFlow = true; }
     return step;
   };
 
@@ -1434,15 +1495,23 @@ async function executeAPINode(client, executionId, node, context) {
     return finishError('Invalid or missing URL (must start with http:// or https://)');
   }
 
+  // headers: canonical is a plain object { Header: value }; an array of
+  // {k,v}/{key,value} rows (older saved nodes) is accepted too.
   const headers = {};
-  for (const h of (Array.isArray(node.apiHeaders) ? node.apiHeaders : [])) {
+  if (node.headers && typeof node.headers === 'object' && !Array.isArray(node.headers)) {
+    for (const [k, v] of Object.entries(node.headers)) {
+      const key = String(k).trim();
+      if (key) headers[key] = resolveVariables(String(v ?? ''), context);
+    }
+  }
+  for (const h of (Array.isArray(node.apiHeaders) ? node.apiHeaders : (Array.isArray(node.headers) ? node.headers : []))) {
     const key = (h && (h.k ?? h.key)) ? String(h.k ?? h.key).trim() : '';
     if (key) headers[key] = resolveVariables(String(h.v ?? h.value ?? ''), context);
   }
 
   const init = { method, headers };
   if (method !== 'GET' && method !== 'DELETE') {
-    const body = resolveVariables(String(node.apiBody ?? node.body ?? ''), context);
+    const body = resolveVariables(String(node.body ?? node.apiBody ?? ''), context);
     if (body && body.trim()) {
       if (!Object.keys(headers).some(k => k.toLowerCase() === 'content-type')) headers['Content-Type'] = 'application/json';
       init.body = body;
@@ -1471,10 +1540,10 @@ async function executeAPINode(client, executionId, node, context) {
 
   // Optional: extract a value from the response and save it to a contact field.
   let savedTo = null;
-  const fieldName = String(node.respField || '').trim();
+  const fieldName = String(node.saveToField || node.respField || '').trim();
   if (fieldName && waNumber && contactNumber) {
     try {
-      const value = extractJsonPath(parsed, node.respPath || '$');
+      const value = extractJsonPath(parsed, node.responsePath || node.respPath || '$');
       if (value !== undefined && value !== null) {
         const { rows: fRows } = await client.query(
           `SELECT id, name FROM coexistence.contact_field_definitions WHERE LOWER(name) = LOWER($1) LIMIT 1`, [fieldName]
@@ -1508,7 +1577,7 @@ async function executeAPINode(client, executionId, node, context) {
   const step = await logStep(client, executionId, node, { method, url }, {
     status: res.status, ok: httpOk, response: parsed, savedTo,
   }, httpOk ? 'success' : 'error');
-  if (!httpOk && onError === 'exit') step.__endExecution = true;
+  if (!httpOk && onError === 'exit') step.__endFlow = true;
   return step;
 }
 
@@ -1660,9 +1729,10 @@ async function walkFrom(client, executionId, nodes, edges, startNodeId, context,
       if (step && step.__pauseExecution) {
         return { paused: true };
       }
-      // A Handoff node ends the automated flow (a human takes over) — stop
-      // walking so no further nodes run after the conversation is handed off.
-      if (step && step.__endExecution) {
+      // __endFlow / __endExecution: the node ended the automated flow cleanly
+      // (handoff → human takes over; api/ai onError=exit) — stop walking, not
+      // an error.
+      if (step && (step.__endFlow || step.__endExecution)) {
         return { paused: false };
       }
     } else {
@@ -1967,21 +2037,32 @@ async function evaluateTriggers(messageRecord) {
           } else {
             shouldFire = isNewContact;
           }
-          // "Require DPDP/GDPR opt-in": only proceed for subscribed contacts.
+          // "Require DPDP/GDPR opt-in": only proceed for explicitly opted-in
+          // contacts — custom_fields.subscribed === 'true' (written by the
+          // Subscribe Contact action) or the subscribed column set true.
           if (shouldFire && triggerNode.requireOptIn) {
-            const { rows: sub } = await client.query(
-              `SELECT subscribed FROM coexistence.contacts WHERE wa_number = $1 AND contact_number = $2 LIMIT 1`,
-              [messageRecord.wa_number, messageRecord.contact_number]
-            );
-            if (sub.length && sub[0].subscribed === false) shouldFire = false;
+            const cf = context.contact?.custom_fields || {};
+            const optedIn = String(cf.subscribed) === 'true';
+            if (!optedIn) {
+              const { rows: sub } = await client.query(
+                `SELECT subscribed, custom_fields FROM coexistence.contacts WHERE wa_number = $1 AND contact_number = $2 LIMIT 1`,
+                [messageRecord.wa_number, messageRecord.contact_number]
+              );
+              const row = sub[0];
+              shouldFire = !!row && (String((row.custom_fields || {}).subscribed) === 'true' || row.subscribed === true);
+            }
           }
         }
       } else if (triggerKind === 'link' || triggerKind === 'qr') {
         // wa.me links & QR codes deliver as a normal inbound message whose body
-        // is the pre-filled text — that text is the attribution marker.
-        const marker = String(triggerNode.prefilledMsg || '').trim().toLowerCase();
-        const body = String(messageRecord.message_body || '').trim().toLowerCase();
-        shouldFire = isRealMessage && !!marker && (body === marker || body.startsWith(marker));
+        // is the pre-filled text. Attribution marker: the link's trackingCode
+        // (appended to the prefill by the builder) or the QR's prefilledMsg.
+        // Contains-match, case-insensitive, so extra user-typed text still fires.
+        const marker = String(
+          (triggerKind === 'link' ? (triggerNode.trackingCode || triggerNode.prefilledMsg) : triggerNode.prefilledMsg) || ''
+        ).trim().toLowerCase();
+        const body = String(messageRecord.message_body || '').toLowerCase();
+        shouldFire = isRealMessage && !!marker && body.includes(marker);
       } else {
         continue; // tagApplied/webhook/apiEvent — fired from other event sources
       }
