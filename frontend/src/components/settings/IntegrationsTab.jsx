@@ -121,7 +121,7 @@ function CardGrid({ onOpen }) {
           Once connected, your AI Agents and automations can call into them:
           <ul style={{ margin: '6px 0 0 18px', padding: 0 }}>
             <li><b>Google Sheets</b> — agents read &amp; write rows during a conversation.</li>
-            <li><b>AI Models</b> — agents run on your connected Anthropic / OpenAI provider.</li>
+            <li><b>AI Models</b> — agents run on your connected Anthropic / OpenAI / Groq provider.</li>
           </ul>
         </div>
       </div>

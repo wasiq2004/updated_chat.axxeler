@@ -7,9 +7,10 @@
 // (util/crypto.js) and never returned in plaintext except via ?reveal=1 on the
 // single-row GET, which is gated to admins.
 //
-// v1 supports the two providers the agent engine has tool-use adapters for:
-// Anthropic and OpenAI. The exact model (e.g. gpt-4o-mini) is chosen per-agent
-// in the agent editor — this registry only stores the provider + credential.
+// Supports the providers the agent engine has tool-use adapters for: Anthropic,
+// OpenAI, and Groq. The exact model (e.g. gpt-4o-mini, llama-3.3-70b-versatile)
+// is chosen per-agent in the agent editor — this registry only stores the
+// provider + credential.
 
 const { Router } = require('express');
 const pool = require('../db');
@@ -18,8 +19,10 @@ const { adminOnly, scopeClause } = require('../middleware/access');
 
 const router = Router();
 
-const SUPPORTED = new Set(['anthropic', 'openai']);
-const PROVIDER_LABELS = { anthropic: 'Anthropic Claude', openai: 'OpenAI' };
+const SUPPORTED = new Set(['anthropic', 'openai', 'groq']);
+const PROVIDER_LABELS = { anthropic: 'Anthropic Claude', openai: 'OpenAI', groq: 'Groq' };
+// Human-readable list for validation errors, kept in sync with SUPPORTED.
+const SUPPORTED_HINT = "provider must be 'anthropic', 'openai', or 'groq'";
 
 // Listing models is needed by the agent editor, which non-admin operators with
 // agent access may open — so list/get(masked) only require authentication.
@@ -87,7 +90,7 @@ router.post('/ai-models', adminOnly, async (req, res) => {
       return res.status(400).json({ error: 'provider and apiKey are required' });
     }
     if (!SUPPORTED.has(provider)) {
-      return res.status(400).json({ error: "provider must be 'anthropic' or 'openai'" });
+      return res.status(400).json({ error: SUPPORTED_HINT });
     }
     const { rows } = await pool.query(
       `INSERT INTO coexistence.ai_models (provider, label, api_key_encrypted, available_models, tenant_id)
@@ -116,7 +119,7 @@ router.put('/ai-models/:id', adminOnly, async (req, res) => {
     if (b.provider !== undefined) {
       const provider = String(b.provider).trim().toLowerCase();
       if (!SUPPORTED.has(provider)) {
-        return res.status(400).json({ error: "provider must be 'anthropic' or 'openai'" });
+        return res.status(400).json({ error: SUPPORTED_HINT });
       }
       push('provider', provider);
     }

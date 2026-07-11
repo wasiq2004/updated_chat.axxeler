@@ -23,10 +23,12 @@
 
 const anthropic = require('./anthropic');
 const openai = require('./openai');
+const groq = require('./groq');
 
 const PROVIDERS = {
   anthropic,
   openai,
+  groq,
 };
 
 function getProvider(name) {

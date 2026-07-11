@@ -16,6 +16,7 @@ import DeleteConfirmModal from '../DeleteConfirmModal.jsx';
 const PROVIDERS = [
   { value: 'anthropic', label: 'Anthropic Claude', hint: 'sk-ant-…' },
   { value: 'openai', label: 'OpenAI', hint: 'sk-…' },
+  { value: 'groq', label: 'Groq', hint: 'gsk_…' },
 ];
 
 const PROVIDER_LABELS = Object.fromEntries(PROVIDERS.map(p => [p.value, p.label]));
@@ -59,7 +60,7 @@ export default function AiModelsTab() {
           <div>
             <h1 style={{ fontSize: 22, fontWeight: 700, color: C.text, margin: 0, letterSpacing: '-.02em' }}>AI Models</h1>
             <p style={{ fontSize: 12, color: C.textMuted, margin: '4px 0 0' }}>
-              Connect an Anthropic or OpenAI key once. AI Agents pick a connected provider — no per-agent keys.
+              Connect an Anthropic, OpenAI, or Groq key once. AI Agents pick a connected provider — no per-agent keys.
             </p>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
@@ -270,7 +271,7 @@ function EmptyState({ onAdd }) {
       </div>
       <div style={{ fontSize: 15, fontWeight: 700, color: C.text, marginBottom: 6 }}>No AI models connected</div>
       <p style={{ fontSize: 13, color: C.textSecondary, margin: '0 0 18px', lineHeight: 1.55 }}>
-        Add an Anthropic or OpenAI key so your AI Agents have a model to run.
+        Add an Anthropic, OpenAI, or Groq key so your AI Agents have a model to run.
       </p>
       <button onClick={onAdd} style={{ ...primaryBtn, margin: '0 auto' }}>
         <Plus size={14} /> Add AI model

@@ -639,7 +639,7 @@ function NotIntegratedCard({ onGo, saving, canGo }) {
         <AlertCircle size={15} color="#B45309" /> No AI model connected
       </div>
       <div style={{ fontSize: 12, color: C.textSecondary, lineHeight: 1.55, marginBottom: 14 }}>
-        Agents need a connected <strong>Anthropic</strong> or <strong>OpenAI</strong> key. Connect one
+        Agents need a connected <strong>Anthropic</strong>, <strong>OpenAI</strong>, or <strong>Groq</strong> key. Connect one
         under <strong>Integrations → AI Models</strong>, then come back and pick it here.
         Your progress is saved as a draft when you go.
       </div>

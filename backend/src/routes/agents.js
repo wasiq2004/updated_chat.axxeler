@@ -26,7 +26,7 @@ async function agentInTenant(req, agentId) {
 
 const router = Router();
 
-const SUPPORTED_PROVIDERS = new Set(['anthropic', 'openai']);
+const SUPPORTED_PROVIDERS = new Set(['anthropic', 'openai', 'groq']);
 
 // Rows from the list/get queries carry joined ai_models columns aliased
 // ai_provider / ai_label so the UI can render "OpenAI — My key" without a

@@ -1,6 +1,7 @@
 const pool = require('../db');
 const { ssrfSafeFetch } = require('../util/ssrfGuard');
 const bus = require('../events');
+const { getProvider } = require('../llm');
 
 /* ══════════════════════════════════════════════════════════════════════
    Minimal Automation Execution Engine
@@ -1333,7 +1334,7 @@ const AI_TASK_LABELS = {
   order_status: 'order status lookup', payment_assistance: 'payment assistance',
   faq_answering: 'FAQ answering', data_collection: 'structured data collection',
 };
-const AI_DEFAULT_MODEL = { anthropic: 'claude-haiku-4-5-20251001', openai: 'gpt-4o-mini' };
+const AI_DEFAULT_MODEL = { anthropic: 'claude-haiku-4-5-20251001', openai: 'gpt-4o-mini', groq: 'llama-3.3-70b-versatile' };
 
 // AI step: single-shot LLM call (via the AI Models registry) scoped to a
 // concrete business task. Replies to the contact on WhatsApp (inside the 24h
@@ -1382,7 +1383,7 @@ async function executeAINode(client, executionId, node, context) {
   // First usable model from the registry (env keys as fallback).
   const { rows: models } = await client.query(
     `SELECT id, provider, api_key_encrypted FROM coexistence.ai_models
-      WHERE provider IN ('anthropic','openai') ORDER BY created_at DESC`
+      WHERE provider IN ('anthropic','openai','groq') ORDER BY created_at DESC`
   );
   let provider = null, apiKey = null;
   for (const m of models) {
@@ -1391,6 +1392,7 @@ async function executeAINode(client, executionId, node, context) {
   }
   if (!apiKey && process.env.ANTHROPIC_API_KEY) { provider = 'anthropic'; apiKey = process.env.ANTHROPIC_API_KEY; }
   if (!apiKey && process.env.OPENAI_API_KEY)    { provider = 'openai';    apiKey = process.env.OPENAI_API_KEY; }
+  if (!apiKey && process.env.GROQ_API_KEY)      { provider = 'groq';      apiKey = process.env.GROQ_API_KEY; }
   if (!apiKey) return runFallback('no_ai_model_connected');
 
   try {
@@ -1405,7 +1407,7 @@ async function executeAINode(client, executionId, node, context) {
     const userMsg =
       `Customer${contact.name ? ` (${contact.name})` : ''} says: ${context.message_body || '(no text)'}`;
 
-    const { runWithTools } = provider === 'anthropic' ? require('../llm/anthropic') : require('../llm/openai');
+    const { runWithTools } = getProvider(provider);
     const result = await runWithTools({
       systemPrompt,
       messages: [{ role: 'user', content: userMsg }],

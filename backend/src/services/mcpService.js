@@ -21,8 +21,14 @@ const MODEL_CATALOG = {
     { value: 'gpt-4o-mini', label: 'GPT-4o mini' },
     { value: 'gpt-4-turbo', label: 'GPT-4 Turbo' },
   ],
+  groq: [
+    { value: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B Versatile (most capable)' },
+    { value: 'llama-3.1-8b-instant', label: 'Llama 3.1 8B Instant (fastest)' },
+    { value: 'openai/gpt-oss-120b', label: 'GPT-OSS 120B' },
+    { value: 'moonshotai/kimi-k2-instruct', label: 'Kimi K2 Instruct' },
+  ],
 };
-const PROVIDER_LABELS = { anthropic: 'Anthropic Claude', openai: 'OpenAI', claude_code: 'Claude Code' };
+const PROVIDER_LABELS = { anthropic: 'Anthropic Claude', openai: 'OpenAI', groq: 'Groq', claude_code: 'Claude Code' };
 const CAPABILITY_KEYS = ['discovery', 'create_agent', 'update_agent', 'manage_tools', 'delete'];
 
 /* --------------------------- tables + settings --------------------------- */

@@ -557,12 +557,18 @@ async function buildMessageHistory({ waAccountId, contactNumber, limit, currentI
 // (joined as ai_provider / ai_api_key_encrypted). The registry key wins; if the
 // row has none (shouldn't happen — the route requires a key) or the agent has no
 // model bound, fall back to the server-wide env key for that provider.
+// Server-wide env var that backs each provider when no registry key is present.
+const PROVIDER_ENV_KEY = {
+  anthropic: 'ANTHROPIC_API_KEY',
+  openai: 'OPENAI_API_KEY',
+  groq: 'GROQ_API_KEY',
+};
+
 function pickApiKey(agent) {
   const fromRegistry = decrypt(agent.ai_api_key_encrypted);
   if (fromRegistry) return fromRegistry;
-  if (agent.ai_provider === 'anthropic') return process.env.ANTHROPIC_API_KEY || '';
-  if (agent.ai_provider === 'openai')    return process.env.OPENAI_API_KEY || '';
-  return '';
+  const envName = PROVIDER_ENV_KEY[agent.ai_provider];
+  return envName ? (process.env[envName] || '') : '';
 }
 
 // Resolve an OpenAI key for Whisper transcription: the agent's own key if it's
@@ -739,7 +745,7 @@ async function runAgent({ agentId, contactNumber, inboundMessageId, inboundText 
 
   const apiKey = pickApiKey(agent);
   if (!apiKey) {
-    throw new Error(`No API key for provider '${agent.ai_provider}'. Add it under Integrations → AI Models, or set ${agent.ai_provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY'} in backend/.env.`);
+    throw new Error(`No API key for provider '${agent.ai_provider}'. Add it under Integrations → AI Models, or set ${PROVIDER_ENV_KEY[agent.ai_provider] || 'the provider API key'} in backend/.env.`);
   }
 
   // Voice notes: when the agent has transcription on and the inbound is audio
@@ -927,7 +933,7 @@ async function runAgentTest({ agentId, messages }) {
 
   const apiKey = pickApiKey(agent);
   if (!apiKey) {
-    throw new Error(`No API key for provider '${agent.ai_provider}'. Add it under Integrations → AI Models, or set ${agent.ai_provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY'} in backend/.env.`);
+    throw new Error(`No API key for provider '${agent.ai_provider}'. Add it under Integrations → AI Models, or set ${PROVIDER_ENV_KEY[agent.ai_provider] || 'the provider API key'} in backend/.env.`);
   }
 
   // `collected` gathers the media groups the agent "sends" so the live preview
