@@ -38,8 +38,13 @@ export const api = {
       req('/auth/setup', { method: 'POST', body: JSON.stringify({ email, password, displayName }) }),
     login: (email, password) =>
       req('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
+    // Direct "Sign in with Facebook" for a returning, already-linked user.
+    facebook: (accessToken) =>
+      req('/auth/facebook', { method: 'POST', body: JSON.stringify({ accessToken }) }),
     logout: () => req('/auth/logout', { method: 'POST' }),
   },
+  // Public runtime config (Facebook SDK app id/config id). No auth.
+  publicConfig: () => req('/public-config'),
   // Public white-label login branding by reseller slug (?w=<slug>). No auth.
   brandingBySlug: (slug) => req(`/branding/by-slug/${encodeURIComponent(slug)}`),
   dashboard: (range = '7d') => req(`/dashboard?range=${encodeURIComponent(range)}`),
@@ -192,6 +197,8 @@ export const api = {
     create: (data) => req('/whatsapp-accounts', { method: 'POST', body: JSON.stringify(data) }),
     update: (id, data) => req(`/whatsapp-accounts/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id) => req(`/whatsapp-accounts/${id}`, { method: 'DELETE' }),
+    // Connect a WABA via Facebook Embedded Signup (code + WABA/Phone IDs).
+    embeddedSignup: (data) => req('/whatsapp-accounts/embedded-signup', { method: 'POST', body: JSON.stringify(data) }),
   },
   // Google integrations (v1: Google Sheets only; Gmail + Calendar in a later
   // release reuse the same /google-integrations table and OAuth flow).

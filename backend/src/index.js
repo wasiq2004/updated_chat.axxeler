@@ -151,6 +151,9 @@ app.use('/api', require('./routes/hooks').publicRouter);
 // Remote (Streamable HTTP) MCP connector — key in the URL path, public.
 app.all('/api/mcp/http/:key', mcpHttpHandler);
 
+// Public runtime config (Facebook SDK app id, etc.) — needed before login.
+app.use('/api', require('./routes/publicConfig').router);
+
 // Auth routes (public)
 app.use('/api', authRouter);
 

@@ -4,6 +4,7 @@ const bcrypt = require('bcryptjs');
 const pool = require('./db');
 const { effectivePages } = require('./permissions');
 const { isStrong } = require('./util/instanceSecrets');
+const facebookAuth = require('./services/facebookAuth');
 
 async function loadUserSession(userId) {
   const { rows } = await pool.query(
@@ -204,6 +205,45 @@ router.post('/auth/login', async (req, res) => {
   } catch (err) {
     console.error('[auth] login error:', err.message);
     res.status(500).json({ error: 'Login failed' });
+  }
+});
+
+// POST /api/auth/facebook — public. Direct "Sign in with Facebook" for a
+// returning user who previously linked their Facebook identity (by connecting
+// WhatsApp via Embedded Signup). Body: { accessToken } — a Facebook user access
+// token from the browser SDK. We verify it server-side (never trust a client-
+// supplied id), resolve the app-scoped user id, and match a linked account. A
+// person with no linked account is told to sign in with email/password first.
+router.post('/auth/facebook', async (req, res) => {
+  if (!facebookAuth.isConfigured()) {
+    return res.status(400).json({ error: 'Facebook login is not enabled on this server.' });
+  }
+  const { accessToken } = req.body || {};
+  if (!accessToken) return res.status(400).json({ error: 'Facebook access token required' });
+  try {
+    const { fbUserId } = await facebookAuth.verifyTokenOwner(accessToken);
+    const { rows } = await pool.query(
+      'SELECT * FROM coexistence.z_chat_users WHERE fb_user_id = $1',
+      [fbUserId]
+    );
+    const user = rows[0];
+    if (!user) {
+      return res.status(401).json({
+        error: 'This Facebook account isn’t linked yet. Sign in with your email and password, then connect WhatsApp via Facebook.',
+        code: 'FB_NOT_LINKED',
+      });
+    }
+    if (user.is_active === false) {
+      return res.status(403).json({ error: 'Account is disabled. Contact an administrator.' });
+    }
+    const token = signToken(user);
+    setAuthCookie(res, token);
+    pool.query(`UPDATE coexistence.z_chat_users SET last_login_at = NOW() WHERE id = $1`, [user.id]).catch(() => {});
+    const session = await loadUserSession(user.id);
+    res.json({ user: session });
+  } catch (err) {
+    console.error('[auth] facebook login error:', err.message);
+    res.status(401).json({ error: 'Facebook sign-in failed. Please try again or use email and password.' });
   }
 });
 

@@ -3,6 +3,7 @@ const pool = require('../db');
 const { encrypt, decrypt, maskSecret } = require('../util/crypto');
 const { adminOnly, scopeClause, orgScope } = require('../middleware/access');
 const { isAdmin } = require('../permissions');
+const facebookAuth = require('../services/facebookAuth');
 
 const router = Router();
 
@@ -40,6 +41,7 @@ function publicShape(row, { includeSecrets = false } = {}) {
     isDefault: row.is_default,
     isActive: row.is_active,
     healthStatus: row.health_status || 'unknown',
+    connectionMethod: row.connection_method || 'manual',
     lastErrorAt: row.last_error_at,
     lastErrorMessage: row.last_error_message,
     lastSuccessAt: row.last_success_at,
@@ -171,6 +173,111 @@ router.post('/whatsapp-accounts', adminOnly, async (req, res) => {
     if (err.code === '23505') return res.status(409).json({ error: 'This Phone Number ID is already connected' });
     console.error('[whatsapp-accounts] create error:', err.message);
     res.status(500).json({ error: 'Failed to create WhatsApp Business account' });
+  }
+});
+
+// POST /whatsapp-accounts/embedded-signup — connect a WABA via Facebook Business
+// Login (Meta Embedded Signup) instead of pasting a token. The browser runs
+// FB.login({config_id, response_type:'code'}) and posts the returned `code` plus
+// the WABA + Phone IDs captured from the WA_EMBEDDED_SIGNUP message event. We
+// exchange the code for a token server-side, verify + save the account, and link
+// the person's Facebook identity to their account so they can later sign in with
+// Facebook. Optional fbAccessToken lets us capture a server-verified identity.
+router.post('/whatsapp-accounts/embedded-signup', adminOnly, async (req, res) => {
+  const { code, wabaId, phoneNumberId, metaAppId, fbAccessToken, fbUserId } = req.body || {};
+  if (!facebookAuth.isConfigured()) {
+    return res.status(400).json({ error: 'Facebook login is not enabled on this server.' });
+  }
+  if (!code || !wabaId || !phoneNumberId) {
+    return res.status(400).json({ error: 'Facebook code, WhatsApp Business Account ID and Phone Number ID are required' });
+  }
+  try {
+    // 1. Exchange the Business-Login code for an access token (server-to-server).
+    const accessToken = await facebookAuth.exchangeCodeForToken(code);
+
+    // 2. Verify the token can talk to Meta for this number + derive display name.
+    let displayName = `WhatsApp ${String(wabaId).trim()}`;
+    let displayPhoneNumber = '';
+    try {
+      const meta = await fetchPhoneMeta(String(phoneNumberId).trim(), accessToken);
+      if (meta.verified_name) displayName = meta.verified_name;
+      if (meta.display_phone_number) displayPhoneNumber = String(meta.display_phone_number).replace(/\D/g, '');
+    } catch (e) {
+      console.warn('[whatsapp-accounts] embedded-signup Meta check failed:', e.message);
+      return res.status(400).json({ error: `Couldn't verify this WhatsApp number with Meta: ${e.message}` });
+    }
+
+    // 3. Subscribe our app to the WABA so its webhooks reach us (best-effort).
+    const sub = await facebookAuth.subscribeAppToWaba(String(wabaId).trim(), accessToken);
+    if (!sub.ok && !sub.skipped) {
+      console.warn('[whatsapp-accounts] subscribed_apps failed (continuing):', sub.error);
+    }
+
+    // 4. Persist the connected account (mirrors the manual create INSERT).
+    const client = await pool.connect();
+    let created;
+    try {
+      await client.query('BEGIN');
+      const { rows } = await client.query(
+        `INSERT INTO coexistence.whatsapp_accounts
+          (display_name, display_phone_number, phone_number_id, waba_id, meta_app_id,
+           access_token_encrypted, verify_token_encrypted, is_default, is_active,
+           connection_method, tenant_id, organization_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,
+           (SELECT NOT EXISTS (SELECT 1 FROM coexistence.whatsapp_accounts
+                                WHERE tenant_id IS NOT DISTINCT FROM $8)),
+           TRUE, 'embedded_signup', $8, $9)
+         RETURNING *`,
+        [
+          displayName, displayPhoneNumber, String(phoneNumberId).trim(), String(wabaId).trim(),
+          metaAppId?.trim() || facebookAuth.getPublicConfig().appId || null,
+          encrypt(accessToken), encrypt(''),
+          req.tenantId ?? null, req.organizationId ?? null,
+        ]
+      );
+      await client.query('COMMIT');
+      created = rows[0];
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    // 5. Link the person's Facebook identity to their account so "Sign in with
+    //    Facebook" works next time. Prefer a server-verified id (from a user
+    //    token); fall back to the client-asserted id. Best-effort — a linking
+    //    failure (e.g. the id already belongs to another account) must not fail
+    //    the connection itself.
+    let linkedFbUserId = null;
+    try {
+      if (fbAccessToken) {
+        const owner = await facebookAuth.verifyTokenOwner(fbAccessToken);
+        linkedFbUserId = owner.fbUserId;
+      } else if (fbUserId) {
+        linkedFbUserId = String(fbUserId);
+      }
+      if (linkedFbUserId) {
+        await pool.query(
+          `UPDATE coexistence.z_chat_users
+              SET fb_user_id = $1
+            WHERE id = $2 AND (fb_user_id IS NULL OR fb_user_id = $1)`,
+          [linkedFbUserId, req.user.id]
+        );
+      }
+    } catch (e) {
+      if (e.code === '23505') {
+        console.warn('[whatsapp-accounts] Facebook id already linked to another account; skipping link.');
+      } else {
+        console.warn('[whatsapp-accounts] Facebook identity link failed (continuing):', e.message);
+      }
+    }
+
+    res.status(201).json({ ...publicShape(created, { includeSecrets: true }), fbLinked: !!linkedFbUserId });
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'This Phone Number ID is already connected' });
+    console.error('[whatsapp-accounts] embedded-signup error:', err.message);
+    res.status(500).json({ error: err.message || 'Failed to connect WhatsApp via Facebook' });
   }
 });
 

@@ -26,7 +26,9 @@ import BrandingPage from './pages/BrandingPage.jsx';
 import AuditPage from './pages/AuditPage.jsx';
 import UpgradeGate from './components/UpgradeGate.jsx';
 import RenewGate from './components/RenewGate.jsx';
+import ConnectWhatsAppModal from './components/ConnectWhatsAppModal.jsx';
 import { canAccessPage } from './lib/plans.js';
+import { getFacebookConfig } from './lib/facebook.js';
 
 const VALID_PAGES = new Set([
   'home', 'chatbot-builder', 'template-builder', 'chats',
@@ -73,6 +75,39 @@ export default function App() {
     if (user && page === 'super-admin' && !isConsoleUser) setPage('home');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page, user]);
+
+  // Post-login nudge: a tenant admin who hasn't connected a WhatsApp number yet
+  // is invited to connect it via Facebook (Embedded Signup). Only when a Meta app
+  // is configured, and only once per browser session (not on every reload).
+  const [showConnectWa, setShowConnectWa] = useState(false);
+  useEffect(() => {
+    if (!user || user.role !== 'admin' || isConsoleUser) { setShowConnectWa(false); return; }
+    let seen = false;
+    try { seen = sessionStorage.getItem('zc_fb_connect_seen') === '1'; } catch { /* ignore */ }
+    if (seen) return;
+    let alive = true;
+    (async () => {
+      const cfg = await getFacebookConfig().catch(() => null);
+      if (!alive || !cfg?.enabled) return;
+      // Only nudge when we can POSITIVELY confirm the tenant has zero connected
+      // numbers. If the lookup fails, stay silent rather than risk showing the
+      // popup to someone who has already connected WhatsApp.
+      let accounts;
+      try {
+        accounts = await api.whatsappAccounts.list();
+      } catch {
+        return;
+      }
+      if (alive && Array.isArray(accounts) && accounts.length === 0) setShowConnectWa(true);
+    })();
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, isConsoleUser]);
+
+  const dismissConnectWa = () => {
+    try { sessionStorage.setItem('zc_fb_connect_seen', '1'); } catch { /* ignore */ }
+    setShowConnectWa(false);
+  };
 
   // Console operators (platform owner & resellers) have NO operational workspace —
   // they only monitor/configure. Keep them inside the console; to actually work
@@ -316,6 +351,12 @@ export default function App() {
           {renderPage()}
         </div>
       </div>
+      {showConnectWa && (
+        <ConnectWhatsAppModal
+          onClose={dismissConnectWa}
+          onConnected={dismissConnectWa}
+        />
+      )}
     </div>
   );
 }

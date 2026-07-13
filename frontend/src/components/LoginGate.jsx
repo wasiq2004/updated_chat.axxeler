@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Lock, LogIn, Eye, EyeOff, ArrowLeft } from 'lucide-react';
 import { api } from '../api.js';
 import { C, FONT } from '../constants.js';
+import { loadFacebookSdk, fbLogin } from '../lib/facebook.js';
 
 // White-label: read the partner slug from ?w=<slug> (search or hash query) so a
 // partner's customers see branded login on the shared domain.
@@ -23,12 +24,40 @@ export default function LoginGate({ onLogin, onBack }) {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [brand, setBrand] = useState(null); // partner white-label branding
+  const [fbEnabled, setFbEnabled] = useState(false);
+  const [fbLoading, setFbLoading] = useState(false);
 
   useEffect(() => {
     const slug = readPartnerSlug();
     if (!slug) return;
     api.brandingBySlug(slug).then(b => { if (b?.found) setBrand(b); }).catch(() => {});
   }, []);
+
+  // Show the "Sign in with Facebook" button only when the server has a Meta app
+  // configured. Preload the SDK so the click is instant.
+  useEffect(() => {
+    let alive = true;
+    loadFacebookSdk().then(cfg => { if (alive) setFbEnabled(!!cfg?.enabled); }).catch(() => {});
+    return () => { alive = false; };
+  }, []);
+
+  const handleFacebook = async () => {
+    setError('');
+    setFbLoading(true);
+    try {
+      const cfg = await loadFacebookSdk();
+      if (!cfg?.enabled) { setError('Facebook sign-in isn’t available.'); return; }
+      const resp = await fbLogin({ scope: 'public_profile,email' });
+      const token = resp?.authResponse?.accessToken;
+      if (!token) { setError('Facebook sign-in was cancelled.'); return; }
+      const { user } = await api.auth.facebook(token);
+      onLogin(user);
+    } catch (err) {
+      setError(err.message || 'Facebook sign-in failed.');
+    } finally {
+      setFbLoading(false);
+    }
+  };
 
   const accent = (brand?.primaryColor) || C.primary;
   const brandName = brand?.brandName || 'Zen Chat';
@@ -243,6 +272,39 @@ export default function LoginGate({ onLogin, onBack }) {
               {loading ? 'Signing in…' : 'Sign in'}
             </button>
           </form>
+
+          {fbEnabled && (
+            <>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '22px 0' }}>
+                <div style={{ flex: 1, height: 1, background: C.border }} />
+                <span style={{ fontSize: 11, fontWeight: 600, color: C.textSecondary, letterSpacing: '0.06em', textTransform: 'uppercase' }}>or</span>
+                <div style={{ flex: 1, height: 1, background: C.border }} />
+              </div>
+              <button
+                type="button"
+                onClick={handleFacebook}
+                disabled={fbLoading || loading}
+                style={{
+                  width: '100%', padding: '12px', borderRadius: 10, border: 'none',
+                  background: '#1877f2', color: '#fff', fontSize: 14, fontWeight: 600,
+                  cursor: (fbLoading || loading) ? 'not-allowed' : 'pointer',
+                  opacity: (fbLoading || loading) ? 0.75 : 1,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
+                  fontFamily: FONT,
+                }}
+                onMouseEnter={e => { if (!fbLoading && !loading) e.currentTarget.style.background = '#1668d6'; }}
+                onMouseLeave={e => { e.currentTarget.style.background = '#1877f2'; }}
+              >
+                {fbLoading
+                  ? <span style={{ display: 'inline-block', width: 16, height: 16, border: '2px solid rgba(255,255,255,0.4)', borderTopColor: '#fff', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
+                  : <FacebookGlyph />}
+                {fbLoading ? 'Connecting…' : 'Sign in with Facebook'}
+              </button>
+              <p style={{ fontSize: 11.5, color: C.textMuted, marginTop: 10, textAlign: 'center', lineHeight: 1.5 }}>
+                Works once you’ve connected WhatsApp via Facebook. First time? Sign in above, then connect.
+              </p>
+            </>
+          )}
         </div>
       </div>
 
@@ -253,5 +315,14 @@ export default function LoginGate({ onLogin, onBack }) {
         }
       `}</style>
     </div>
+  );
+}
+
+// Facebook "f" wordmark glyph (white), inline SVG so it needs no external asset.
+function FacebookGlyph() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z" />
+    </svg>
   );
 }
