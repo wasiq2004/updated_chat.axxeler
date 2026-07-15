@@ -9,6 +9,8 @@ import {
 import { api } from '../api.js';
 import { C, FONT, MONO, maskPhone } from '../constants.js';
 import DeleteConfirmModal from '../components/DeleteConfirmModal.jsx';
+import ConnectWhatsAppModal from '../components/ConnectWhatsAppModal.jsx';
+import { getFacebookConfig } from '../lib/facebook.js';
 import SearchableSelect from '../components/SearchableSelect.jsx';
 import IntegrationsTab from '../components/settings/IntegrationsTab.jsx';
 import { useTableSelection, SelectAllCheckbox, RowCheckbox, BulkDeleteButton, runBulkDelete } from '../components/TableSelection.jsx';
@@ -733,6 +735,22 @@ function WhatsappAccountsTab() {
   const [showToken, setShowToken] = useState(false);
   const [saving, setSaving] = useState(false);
   const [copied, setCopied] = useState(false);
+  // Connect via Facebook (Meta Embedded Signup). Until now this flow existed
+  // ONLY in the post-login nudge, which shows once per session and only when the
+  // tenant has zero accounts — so there was no way to reach it from here, and no
+  // way to add a SECOND number without pasting tokens by hand.
+  const [showFbConnect, setShowFbConnect] = useState(false);
+  const [fbEnabled, setFbEnabled] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    // Only offer it when the server actually has a Meta app configured —
+    // otherwise the button opens a modal that can only apologise.
+    getFacebookConfig()
+      .then(cfg => { if (alive) setFbEnabled(!!cfg?.enabled); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
 
   // The callback URL to register in the Meta App Dashboard — always the live origin.
   const webhookUrl = `${window.location.origin}/api/webhook/whatsapp`;
@@ -836,13 +854,35 @@ function WhatsappAccountsTab() {
             Connect one or more WhatsApp Business numbers to send templates, broadcasts and automation messages.
           </p>
         </div>
-        <button onClick={startCreate} style={{
-          display: 'flex', alignItems: 'center', gap: 6,
-          padding: '8px 14px', background: C.primary, color: '#fff', border: 'none',
-          borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: FONT,
-        }}>
-          <Plus size={15} /> Connect account
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+          {fbEnabled && (
+            // Primary path: no tokens to copy, and it registers the number with
+            // Meta so it can actually send. Manual entry stays for anyone who
+            // already has a permanent token.
+            <button onClick={() => setShowFbConnect(true)} style={{
+              display: 'flex', alignItems: 'center', gap: 7,
+              padding: '8px 14px', background: '#1877f2', color: '#fff', border: 'none',
+              borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: FONT,
+            }}
+              onMouseEnter={e => { e.currentTarget.style.background = '#1668d6'; }}
+              onMouseLeave={e => { e.currentTarget.style.background = '#1877f2'; }}
+            >
+              <FbGlyph /> Connect with Facebook
+            </button>
+          )}
+          <button onClick={startCreate} style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            padding: '8px 14px',
+            // Once Facebook is available it's the recommended route, so manual
+            // entry steps back to a secondary button rather than competing.
+            background: fbEnabled ? 'transparent' : C.primary,
+            color: fbEnabled ? C.text : '#fff',
+            border: fbEnabled ? `1px solid ${C.border}` : 'none',
+            borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: FONT,
+          }}>
+            <Plus size={15} /> {fbEnabled ? 'Add manually' : 'Connect account'}
+          </button>
+        </div>
       </div>
 
       {loading ? (
@@ -855,6 +895,17 @@ function WhatsappAccountsTab() {
           <MessageSquare size={36} style={{ opacity: 0.5, marginBottom: 12 }} />
           <div style={{ marginBottom: 6, color: C.textSecondary, fontWeight: 600 }}>No WhatsApp Business account connected yet</div>
           <div>Connect your WhatsApp Business account to start creating templates and broadcasts.</div>
+          {fbEnabled && (
+            // The empty state had no CTA — it described the problem and offered
+            // nothing to do about it.
+            <button onClick={() => setShowFbConnect(true)} style={{
+              display: 'inline-flex', alignItems: 'center', gap: 7, marginTop: 16,
+              padding: '10px 18px', background: '#1877f2', color: '#fff', border: 'none',
+              borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: FONT,
+            }}>
+              <FbGlyph /> Connect with Facebook
+            </button>
+          )}
         </div>
       ) : (
         <div style={{ background: C.cardBg, border: `1px solid ${C.border}`, borderRadius: 10, overflow: 'hidden' }}>
@@ -1032,7 +1083,27 @@ function WhatsappAccountsTab() {
           </div>
         </div>
       )}
+
+      {showFbConnect && (
+        <ConnectWhatsAppModal
+          context="settings"
+          // onConnected fires the moment the save succeeds — refresh the list
+          // behind the modal, but do NOT close it: the success screen carries
+          // the two-step-PIN warning when Meta refused to register the number.
+          onConnected={refresh}
+          onClose={() => setShowFbConnect(false)}
+        />
+      )}
     </div>
+  );
+}
+
+// Facebook "f", inline so it needs no asset.
+function FbGlyph() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z" />
+    </svg>
   );
 }
 

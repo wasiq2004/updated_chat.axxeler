@@ -10,10 +10,19 @@ import { loadFacebookSdk, fbLogin } from '../lib/facebook.js';
  * links the person's Facebook identity so they can later "Sign in with Facebook".
  *
  * Props:
- *   onClose()      — dismiss ("I'll do this later")
- *   onConnected()  — a number was connected (parent refreshes + closes)
+ *   onClose()      — dismiss / done. Also what the success screen's Continue does.
+ *   onConnected()  — a number WAS connected. Fires as soon as the save succeeds,
+ *                    before the success screen is shown, so a parent list can
+ *                    refresh behind it. It must NOT close the modal: doing so
+ *                    skips the success screen — including the two-step-PIN
+ *                    warning, which is the one thing the user needs to read.
+ *   context        — 'firstRun' (the post-login nudge) or 'settings' (opened
+ *                    from Settings → WhatsApp Accounts). Only changes copy: the
+ *                    nudge's "I'll do this later" and "you can connect manually
+ *                    in Settings" are nonsense once you're already in Settings.
  */
-export default function ConnectWhatsAppModal({ onClose, onConnected }) {
+export default function ConnectWhatsAppModal({ onClose, onConnected, context = 'firstRun' }) {
+  const isFirstRun = context !== 'settings';
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [done, setDone] = useState(false);
@@ -175,17 +184,24 @@ export default function ConnectWhatsAppModal({ onClose, onConnected }) {
                 }}>{warning}</p>
               ) : (
                 <p style={{ fontSize: 13, color: C.textSecondary, lineHeight: 1.55, margin: '0 0 18px' }}>
-                  Your number is linked. Next time you can sign in straight from the login page with Facebook.
+                  {isFirstRun
+                    ? 'Your number is linked. Next time you can sign in straight from the login page with Facebook.'
+                    : 'Your number is linked and ready to send.'}
                 </p>
               )}
-              <button onClick={onConnected} style={primaryBtn(warning ? C.amber : '#25D366')}>Continue</button>
+              {/* onClose, not onConnected: onConnected already fired the moment
+                  the save succeeded. Wiring Continue to it too made the parent
+                  run its "connected" handler twice. */}
+              <button onClick={onClose} style={primaryBtn(warning ? C.amber : '#25D366')}>Continue</button>
             </div>
           ) : (
             <>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 20 }}>
                 <Benefit icon={<Zap size={16} color="#1877f2" />} title="Fast, guided setup" text="Facebook walks you through picking your business and number." />
                 <Benefit icon={<ShieldCheck size={16} color="#1877f2" />} title="Secure by design" text="We never see your password; tokens are exchanged server-side and encrypted." />
-                <Benefit icon={<PlugZap size={16} color="#1877f2" />} title="One-tap sign-in later" text="Once connected, use “Sign in with Facebook” on the login page." />
+                {isFirstRun
+                  ? <Benefit icon={<PlugZap size={16} color="#1877f2" />} title="One-tap sign-in later" text="Once connected, use “Sign in with Facebook” on the login page." />
+                  : <Benefit icon={<PlugZap size={16} color="#1877f2" />} title="Ready to send" text="We register the number with Meta so it can send straight away." />}
               </div>
 
               {error && (
@@ -204,11 +220,14 @@ export default function ConnectWhatsAppModal({ onClose, onConnected }) {
                 background: 'transparent', border: 'none', color: C.textSecondary,
                 fontSize: 13, fontWeight: 600, fontFamily: FONT, cursor: busy ? 'not-allowed' : 'pointer',
               }}>
-                I’ll do this later
+                {isFirstRun ? 'I’ll do this later' : 'Cancel'}
               </button>
-              <p style={{ fontSize: 11, color: C.textMuted, textAlign: 'center', margin: '10px 0 0', lineHeight: 1.5 }}>
-                You can also connect manually anytime in Settings → WhatsApp Accounts.
-              </p>
+              {isFirstRun && (
+                // Pointless when the modal was opened FROM that very screen.
+                <p style={{ fontSize: 11, color: C.textMuted, textAlign: 'center', margin: '10px 0 0', lineHeight: 1.5 }}>
+                  You can also connect manually anytime in Settings → WhatsApp Accounts.
+                </p>
+              )}
             </>
           )}
         </div>
