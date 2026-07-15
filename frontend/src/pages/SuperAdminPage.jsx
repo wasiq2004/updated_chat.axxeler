@@ -15,10 +15,12 @@ import {
   LayoutDashboard, Users, Building2, CreditCard, Palette, ScrollText,
   ChevronLeft, ChevronRight, TrendingUp, Bot, Contact,
   PlugZap, CheckCircle2, AlertTriangle, XCircle, Clock, ShieldAlert,
+  KeyRound, Trash2,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { C, FONT } from '../constants.js';
 import { VIZ_CSS, STATUS, ordinalStep, compact } from '../lib/vizTokens.js';
+import { fmtMoney } from '../lib/plans.js';
 import { ChartCard, LineChart, BarChart, StatTile } from '../components/superadmin/Charts.jsx';
 
 // Nav depends on the operator: the platform owner manages Partners (resellers);
@@ -68,10 +70,6 @@ const inputStyle = {
   fontFamily: FONT, fontSize: 14, background: C.cardBg, color: C.text,
 };
 
-function fmtMoney(n) {
-  const v = Number(n || 0);
-  return `$${v.toLocaleString(undefined, { maximumFractionDigits: v < 100 ? 2 : 0 })}`;
-}
 function fmtDate(d) {
   return d ? new Date(d).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : '—';
 }
@@ -231,6 +229,8 @@ function Partners() {
   const { data, error, loading, reload } = useAsync(() => api.platform.resellers(), []);
   const [showCreate, setShowCreate] = useState(false);
   const [busy, setBusy] = useState(null);
+  const [creds, setCreds] = useState(null);          // partner whose credentials are open
+  const [pendingDelete, setPendingDelete] = useState(null);
 
   async function toggle(r) {
     const next = r.status === 'suspended' ? 'active' : 'suspended';
@@ -240,7 +240,10 @@ function Partners() {
     catch (e) { alert(e.message); } finally { setBusy(null); }
   }
 
-  if (loading) return <Muted>Loading…</Muted>;
+  // `loading && !data`, not `loading`: a refetch must not unmount the subtree —
+  // that would tear down an open dialog (and with it a one-time password that
+  // has already been issued and can never be shown again).
+  if (loading && !data) return <Muted>Loading…</Muted>;
   if (error) return <ErrorBox msg={error} />;
 
   return (
@@ -264,15 +267,31 @@ function Partners() {
           <tbody>
             {(data || []).map(r => (
               <tr key={r.id} style={{ borderTop: `1px solid ${C.border}` }}>
-                <td style={{ padding: '11px 14px', fontWeight: 600 }}>{r.branding?.brandName || r.name}</td>
+                <td style={{ padding: '11px 14px', fontWeight: 600 }}>
+                  {r.branding?.brandName || r.name}
+                  {r.admin_email && (
+                    <div style={{ fontSize: 11.5, color: C.textMuted, fontWeight: 500, marginTop: 2 }}>{r.admin_email}</div>
+                  )}
+                </td>
                 <td style={{ padding: '11px 14px', color: C.textSecondary }}>?w={r.slug}</td>
                 <td style={{ padding: '11px 14px' }}><StatusPill status={r.status} /></td>
                 <td style={{ padding: '11px 14px' }}>{r.admins}</td>
                 <td style={{ padding: '11px 14px' }}>{r.users}</td>
                 <td style={{ padding: '11px 14px', textAlign: 'right' }}>
-                  <button style={{ ...btn, padding: '5px 10px', fontSize: 12.5 }} disabled={busy === r.id} onClick={() => toggle(r)}>
-                    {r.status === 'suspended' ? 'Activate' : 'Suspend'}
-                  </button>
+                  <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                    <button title="View login credentials" style={{ ...btn, padding: '5px 10px', fontSize: 12.5 }}
+                      onClick={() => setCreds(r)}>
+                      <KeyRound size={13} style={{ verticalAlign: '-2px' }} /> Credentials
+                    </button>
+                    <button style={{ ...btn, padding: '5px 10px', fontSize: 12.5 }} disabled={busy === r.id} onClick={() => toggle(r)}>
+                      {r.status === 'suspended' ? 'Activate' : 'Suspend'}
+                    </button>
+                    <button title="Delete partner" aria-label={`Delete ${r.name}`}
+                      style={{ ...btn, padding: '5px 9px', color: '#DC2626' }}
+                      disabled={busy === r.id} onClick={() => setPendingDelete(r)}>
+                      <Trash2 size={14} style={{ verticalAlign: '-2px' }} />
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
@@ -282,9 +301,142 @@ function Partners() {
           </tbody>
         </table>
       </div>
+
+      {creds && <PartnerCredentials partner={creds} onClose={() => setCreds(null)} />}
+      {pendingDelete && (
+        <DeletePartner partner={pendingDelete} onClose={() => setPendingDelete(null)}
+          onDeleted={() => { setPendingDelete(null); reload(); }} />
+      )}
     </div>
   );
 }
+
+// ─── Partner credentials ─────────────────────────────────────────────────────
+// Everything needed to hand a partner their console access. The password is NOT
+// shown — it is stored as a one-way bcrypt hash and cannot be read back by
+// anyone, so the only honest option is to issue a new one (shown once).
+function PartnerCredentials({ partner, onClose }) {
+  const [pw, setPw] = useState(null);      // freshly issued password, shown once
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const [confirming, setConfirming] = useState(false);
+  const loginUrl = `${window.location.origin}/?w=${partner.slug}`;
+
+  async function reset() {
+    setBusy(true); setErr(null);
+    try {
+      const r = await api.platform.resetResellerPassword(partner.id);
+      setPw(r.password);
+      setConfirming(false);
+      // Deliberately no list refetch here: nothing shown in the table changes,
+      // and a refetch would risk re-rendering away the one-time password.
+    } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  }
+
+  return (
+    <Modal onClose={onClose} title={`Credentials — ${partner.branding?.brandName || partner.name}`}>
+      {err && <ErrorBox msg={err} />}
+      <CredRow label="Login URL" value={loginUrl} />
+      <CredRow label="Admin email" value={partner.admin_email || '—'} />
+      <CredRow label="Username" value={partner.admin_username || '—'} />
+      <CredRow label="Last login" value={partner.admin_last_login_at ? fmtDate(partner.admin_last_login_at) : 'Never'} copyable={false} />
+      <CredRow label="Login enabled" value={partner.admin_is_active === false ? 'No — disabled' : 'Yes'} copyable={false} />
+
+      <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px solid ${C.border}` }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: C.textSecondary, marginBottom: 6 }}>Password</div>
+        {pw ? (
+          <div style={{ background: C.pageBg, borderRadius: 8, padding: 12 }}>
+            <div style={{ fontSize: 12, color: C.green, fontWeight: 700, marginBottom: 6 }}>✓ New password issued — copy it now, it won’t be shown again.</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <code style={{ fontFamily: 'Geist Mono, monospace', fontSize: 15, fontWeight: 700, flex: 1 }}>{pw}</code>
+              <button style={{ ...btn, padding: '5px 10px', fontSize: 12 }}
+                onClick={() => navigator.clipboard?.writeText(pw)}>Copy</button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div style={{ fontSize: 12.5, color: C.textSecondary, lineHeight: 1.55, marginBottom: 10 }}>
+              Stored passwords are hashed and can never be displayed — not even here. If the partner
+              lost theirs, issue a new one and send it to them.
+            </div>
+            {confirming ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 12.5, color: C.text, fontWeight: 600 }}>
+                  This replaces their current password immediately.
+                </span>
+                <button style={{ ...btnPrimary, padding: '6px 12px', fontSize: 12.5 }} disabled={busy} onClick={reset}>
+                  {busy ? 'Resetting…' : 'Yes, reset'}
+                </button>
+                <button style={{ ...btn, padding: '6px 12px', fontSize: 12.5 }} onClick={() => setConfirming(false)}>Cancel</button>
+              </div>
+            ) : (
+              <button style={{ ...btn, padding: '7px 12px', fontSize: 12.5 }} onClick={() => setConfirming(true)}>
+                <KeyRound size={13} style={{ verticalAlign: '-2px' }} /> Issue new password
+              </button>
+            )}
+          </>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+function CredRow({ label, value, copyable = true }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 0' }}>
+      <div style={{ width: 110, fontSize: 12, color: C.textSecondary, fontWeight: 600, flexShrink: 0 }}>{label}</div>
+      <div style={{ flex: 1, fontSize: 13, fontFamily: 'Geist Mono, monospace', wordBreak: 'break-all' }}>{value}</div>
+      {copyable && value && value !== '—' && (
+        <button style={{ ...btn, padding: '4px 8px', fontSize: 11 }}
+          onClick={() => navigator.clipboard?.writeText(value)}>Copy</button>
+      )}
+    </div>
+  );
+}
+
+// ─── Delete partner ──────────────────────────────────────────────────────────
+function DeletePartner({ partner, onClose, onDeleted }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const name = partner.branding?.brandName || partner.name;
+
+  async function go() {
+    setBusy(true); setErr(null);
+    try { await api.platform.deleteReseller(partner.id); onDeleted(); }
+    catch (e) { setErr(e.message); setBusy(false); }
+  }
+
+  return (
+    <Modal onClose={onClose} title={`Delete “${name}”?`}>
+      {err && <ErrorBox msg={err} />}
+      <div style={{ fontSize: 13, color: C.textSecondary, lineHeight: 1.6 }}>
+        Their branded login (<code>?w={partner.slug}</code>) stops working and the partner admin can
+        no longer sign in. Their plan catalog and any past records are kept, not destroyed.
+      </div>
+      {partner.admins > 0 && (
+        <div style={{
+          marginTop: 12, padding: '10px 12px', borderRadius: 8, fontSize: 12.5, lineHeight: 1.55,
+          background: 'rgba(245,158,11,.12)', color: '#B45309', border: '1px solid rgba(245,158,11,.3)',
+        }}>
+          This partner still has <b>{partner.admins}</b> admin account(s). Deleting is blocked while they
+          exist — those customers would be left with no owner. Remove them first, or suspend the partner instead.
+        </div>
+      )}
+      <div style={{ marginTop: 16, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+        <button style={btn} onClick={onClose} disabled={busy}>Cancel</button>
+        <button
+          style={{ ...btnPrimary, background: '#DC2626', opacity: partner.admins > 0 ? 0.5 : 1 }}
+          disabled={busy || partner.admins > 0}
+          onClick={go}
+        >
+          {busy ? 'Deleting…' : 'Delete partner'}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+// (The shared <Modal> used by these dialogs is defined further down this file.)
 
 function CreatePartner({ onClose, onCreated }) {
   const [f, setF] = useState({ name: '', adminEmail: '', adminName: '', adminPassword: '', brandName: '', primaryColor: '', logoUrl: '' });
@@ -965,7 +1117,7 @@ function Plans() {
               {!p.is_active && <span style={{ fontSize: 10.5, fontWeight: 700, color: C.textMuted, background: C.pageBg, padding: '2px 7px', borderRadius: 6 }}>Hidden</span>}
             </div>
             <div style={{ fontSize: 22, fontWeight: 800, margin: '6px 0' }}>
-              {Number(p.price_monthly) === 0 ? 'Custom' : `$${p.price_monthly}`}<span style={{ fontSize: 12, color: C.textMuted, fontWeight: 600 }}>/mo</span>
+              {Number(p.price_monthly) === 0 ? 'Custom' : fmtMoney(p.price_monthly, p.currency)}<span style={{ fontSize: 12, color: C.textMuted, fontWeight: 600 }}>/mo</span>
             </div>
             <div style={{ fontSize: 12.5, color: C.textSecondary, marginBottom: 10, minHeight: 32 }}>{p.description}</div>
             <div style={{ fontSize: 12, color: C.textSecondary, lineHeight: 1.8 }}>
@@ -1035,8 +1187,8 @@ function PlanEditor({ plan, allFeatures, onClose, onSaved }) {
         <Field label={isNew ? 'Key (slug, optional)' : 'Key'} block>
           <input value={f.key} disabled={!isNew} onChange={e => upd('key', e.target.value)} style={{ ...inputStyle, width: '100%', opacity: isNew ? 1 : 0.6 }} placeholder="auto from name" />
         </Field>
-        <Field label="Price / month ($)" block><input type="number" min="0" value={f.priceMonthly} onChange={e => upd('priceMonthly', e.target.value)} style={{ ...inputStyle, width: '100%' }} /></Field>
-        <Field label="Price / year ($)" block><input type="number" min="0" value={f.priceYearly} onChange={e => upd('priceYearly', e.target.value)} style={{ ...inputStyle, width: '100%' }} /></Field>
+        <Field label="Price / month (₹)" block><input type="number" min="0" value={f.priceMonthly} onChange={e => upd('priceMonthly', e.target.value)} style={{ ...inputStyle, width: '100%' }} /></Field>
+        <Field label="Price / year (₹)" block><input type="number" min="0" value={f.priceYearly} onChange={e => upd('priceYearly', e.target.value)} style={{ ...inputStyle, width: '100%' }} /></Field>
         <Field label="Max users (blank = ∞)" block><input type="number" min="0" value={f.maxUsers} onChange={e => upd('maxUsers', e.target.value)} style={{ ...inputStyle, width: '100%' }} /></Field>
         <Field label="Max organizations (blank = ∞)" block><input type="number" min="0" value={f.maxOrganizations} onChange={e => upd('maxOrganizations', e.target.value)} style={{ ...inputStyle, width: '100%' }} /></Field>
         <Field label="Max contacts (blank = ∞)" block><input type="number" min="0" value={f.maxContacts} onChange={e => upd('maxContacts', e.target.value)} style={{ ...inputStyle, width: '100%' }} /></Field>

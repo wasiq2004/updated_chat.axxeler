@@ -432,6 +432,11 @@ export const api = {
     resellers: () => req('/platform/resellers'),
     createReseller: (data) => req('/platform/resellers', { method: 'POST', body: JSON.stringify(data) }),
     updateReseller: (id, data) => req(`/platform/resellers/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+    // Soft-delete a partner (refused while they still have admins).
+    deleteReseller: (id) => req(`/platform/resellers/${id}`, { method: 'DELETE' }),
+    // Issue a new console password for the partner's admin — returned once.
+    resetResellerPassword: (id, password) =>
+      req(`/platform/resellers/${id}/reset-password`, { method: 'POST', body: JSON.stringify({ password }) }),
     // A reseller managing itself (branding)
     myReseller: () => req('/platform/my-reseller'),
     updateMyReseller: (data) => req('/platform/my-reseller', { method: 'PATCH', body: JSON.stringify(data) }),

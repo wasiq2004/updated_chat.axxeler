@@ -3,6 +3,7 @@ import { api, setActiveOrg, getActiveOrg } from './api.js';
 import { C, FONT } from './constants.js';
 import { useHashRoute } from './hooks/useHashRoute.js';
 import LoginGate from './components/LoginGate.jsx';
+import LandingPage from './pages/LandingPage.jsx';
 import SetupWizard from './components/SetupWizard.jsx';
 import Topbar from './components/Topbar.jsx';
 import Sidebar from './components/Sidebar.jsx';
@@ -30,6 +31,20 @@ import ConnectWhatsAppModal from './components/ConnectWhatsAppModal.jsx';
 import { canAccessPage } from './lib/plans.js';
 import { getFacebookConfig } from './lib/facebook.js';
 
+// White-label: a partner's customers arrive at ?w=<slug> for their branded
+// login. They must never see our own marketing page. (Mirrors the same read in
+// LoginGate, which uses the slug to fetch the partner's branding.)
+function readPartnerSlug() {
+  try {
+    const fromSearch = new URLSearchParams(window.location.search).get('w');
+    if (fromSearch) return fromSearch;
+    const h = window.location.hash || '';
+    const qi = h.indexOf('?');
+    if (qi >= 0) return new URLSearchParams(h.slice(qi + 1)).get('w');
+  } catch { /* ignore */ }
+  return null;
+}
+
 const VALID_PAGES = new Set([
   'home', 'chatbot-builder', 'template-builder', 'chats',
   'contacts', 'pipelines', 'bulk-message', 'admin-settings', 'media-library',
@@ -43,6 +58,13 @@ export default function App() {
   const [activeOrg, setActiveOrgState] = useState(getActiveOrg());
   const [checking, setChecking] = useState(true);
   const [setupRequired, setSetupRequired] = useState(false);
+  // Logged-out visitors see the marketing page first. `#/login` (or a bookmark
+  // to it) opens the login form straight away, and a white-label partner link
+  // (?w=<slug>) always goes straight to that partner's branded login.
+  const partnerSlug = readPartnerSlug();
+  const [showLogin, setShowLogin] = useState(() => {
+    try { return /#\/?login\b/.test(window.location.hash || ''); } catch { return false; }
+  });
   const [routeParts, navigate, replaceRoute] = useHashRoute();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   // Light/dark theme. Initialized from the data-theme the no-flash boot script in
@@ -240,11 +262,22 @@ export default function App() {
   }
 
   if (!user) {
-    // No marketing landing page — logged-out visitors go straight to the login
-    // screen (which auto-themes for a partner via the ?w=<slug> param).
+    // Logged-out visitors land on the marketing page first; "Start Free" / "Log
+    // in" take them to the login screen, which can come back via "Back to home".
+    // A white-label partner link (?w=<slug>) is a customer's branded login — skip
+    // our marketing page and show their login directly.
+    if (!showLogin && !partnerSlug) {
+      return (
+        <LandingPage
+          onGetStarted={() => setShowLogin(true)}
+          onNavigate={(path) => { window.location.href = path; }}
+        />
+      );
+    }
     return (
       <LoginGate
         onLogin={(u) => { setUser(u); navigate('home'); }}
+        onBack={partnerSlug ? undefined : () => setShowLogin(false)}
       />
     );
   }

@@ -6,7 +6,7 @@ import { useState, useEffect } from 'react';
 import { Check, Minus, Crown, TrendingUp, Users, Building2, Contact } from 'lucide-react';
 import { api } from '../api.js';
 import { C, FONT } from '../constants.js';
-import { PLAN_META, FEATURE_LABELS, formatLimit } from '../lib/plans.js';
+import { PLAN_META, FEATURE_LABELS, formatLimit, fmtMoney } from '../lib/plans.js';
 
 // Preferred display order; any feature the backend catalog exposes that isn't
 // listed here is appended so newly-added/custom features still show in the grid.
@@ -170,7 +170,7 @@ export default function BillingPage({ entitlements: initial }) {
               <div style={{ fontSize: 16, fontWeight: 800, color: m.accent }}>{m.label}</div>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 4, margin: '8px 0 4px' }}>
                 <span style={{ fontSize: 28, fontWeight: 800, letterSpacing: '-0.02em' }}>
-                  {price === 0 ? (p.key === 'enterprise' ? 'Custom' : 'Free') : `$${price}`}
+                  {price === 0 ? (p.key === 'enterprise' ? 'Custom' : 'Free') : fmtMoney(price, p.currency)}
                 </span>
                 {price > 0 && <span style={{ fontSize: 12.5, color: C.textMuted, fontWeight: 600 }}>/mo</span>}
               </div>

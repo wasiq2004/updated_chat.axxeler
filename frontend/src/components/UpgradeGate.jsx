@@ -3,7 +3,7 @@
 
 import { Lock, Sparkles, Check, ArrowRight, Megaphone, Zap, Bot, Crown, Palette } from 'lucide-react';
 import { C, FONT } from '../constants.js';
-import { FEATURE_META, PAGE_FEATURE, PLAN_META, minPlanForFeature } from '../lib/plans.js';
+import { FEATURE_META, PAGE_FEATURE, PLAN_META, minPlanForFeature, fmtMoney } from '../lib/plans.js';
 
 const FEATURE_ICON = { campaigns: Megaphone, automations: Zap, ai_agents: Bot, white_label: Palette };
 
@@ -112,7 +112,7 @@ export default function UpgradeGate({ pageId, entitlements, onViewPlans }) {
                   <span style={{ fontSize: 14, fontWeight: 700 }}>
                     Available on {targetMeta.label}
                     {price != null && price > 0 && (
-                      <span style={{ color: C.textSecondary, fontWeight: 600 }}> · ${price}/mo</span>
+                      <span style={{ color: C.textSecondary, fontWeight: 600 }}> · {fmtMoney(price, target?.currency)}/mo</span>
                     )}
                   </span>
                 </div>

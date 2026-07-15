@@ -759,7 +759,7 @@ router.post('/platform/plans', async (req, res) => {
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
       [
         key, b.name.trim(), b.description || null,
-        Number(b.priceMonthly) || 0, Number(b.priceYearly) || 0, (b.currency || 'USD').slice(0, 8),
+        Number(b.priceMonthly) || 0, Number(b.priceYearly) || 0, (b.currency || 'INR').slice(0, 8),
         NUM(b.maxUsers), NUM(b.maxOrganizations), NUM(b.maxContacts),
         b.isActive != null ? !!b.isActive : true, parseInt(b.position, 10) || 0, rid,
       ]
@@ -853,12 +853,29 @@ router.get('/platform/audit', async (req, res) => {
 // reseller admin can never create another reseller.
 router.get('/platform/resellers', requireSuperAdmin, async (_req, res) => {
   try {
+    // Also surface the partner's console login (their scoped admin user: the
+    // reseller_id row with NO tenant — see the create route below), so the
+    // platform owner can see who to contact / who signs in. The password is a
+    // bcrypt hash and is deliberately NOT selected — it cannot be read back;
+    // issuing a new one goes through /resellers/:id/reset-password.
     const { rows } = await pool.query(`
       SELECT r.id, r.name, r.slug, r.status, r.branding, r.created_at,
              (SELECT COUNT(*)::int FROM coexistence.tenants t WHERE t.reseller_id = r.id AND t.deleted_at IS NULL) AS admins,
              (SELECT COUNT(*)::int FROM coexistence.z_chat_users u
-                WHERE u.tenant_id IN (SELECT id FROM coexistence.tenants WHERE reseller_id = r.id)) AS users
+                WHERE u.tenant_id IN (SELECT id FROM coexistence.tenants WHERE reseller_id = r.id)) AS users,
+             a.id            AS admin_id,
+             a.email         AS admin_email,
+             a.username      AS admin_username,
+             a.display_name  AS admin_name,
+             a.is_active     AS admin_is_active,
+             a.last_login_at AS admin_last_login_at
         FROM coexistence.resellers r
+        LEFT JOIN LATERAL (
+          SELECT u.id, u.email, u.username, u.display_name, u.is_active, u.last_login_at
+            FROM coexistence.z_chat_users u
+           WHERE u.reseller_id = r.id AND u.tenant_id IS NULL
+           ORDER BY u.id ASC LIMIT 1
+        ) a ON TRUE
        WHERE r.deleted_at IS NULL
        ORDER BY r.created_at DESC
     `);
@@ -866,6 +883,99 @@ router.get('/platform/resellers', requireSuperAdmin, async (_req, res) => {
   } catch (err) {
     console.error('[platform] list resellers error:', err.message);
     res.status(500).json({ error: 'Failed to list resellers' });
+  }
+});
+
+// Issue a NEW console password for a partner's admin, returned once in plaintext.
+// A stored password can never be shown (it is a one-way bcrypt hash), so this is
+// the only way to hand a partner working credentials again.
+//
+// This needs its own route: /platform/users/:userId/reset-password scopes by
+// `tenant_id IN (tenants of the scope)`, and a partner admin has NO tenant, so
+// that route can never match one.
+router.post('/platform/resellers/:id/reset-password', requireSuperAdmin, async (req, res) => {
+  try {
+    const newPassword = String(req.body?.password || '').trim() || generatePassword();
+    const hash = await bcrypt.hash(newPassword, 10);
+    const { rows } = await pool.query(
+      `UPDATE coexistence.z_chat_users SET password = $1, updated_at = NOW()
+        WHERE reseller_id = $2 AND tenant_id IS NULL
+          AND id = (SELECT id FROM coexistence.z_chat_users
+                     WHERE reseller_id = $2 AND tenant_id IS NULL ORDER BY id ASC LIMIT 1)
+          AND EXISTS (SELECT 1 FROM coexistence.resellers WHERE id = $2 AND deleted_at IS NULL)
+        RETURNING id, username, email`,
+      [hash, req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Partner admin not found' });
+    await auditLog({
+      actor: req.user, action: 'platform.reseller.reset_password',
+      targetType: 'reseller', targetId: req.params.id,
+      payload: { ip: clientIp(req), userId: rows[0].id },
+    });
+    res.json({ ...rows[0], password: newPassword });
+  } catch (err) {
+    console.error('[platform] reseller reset password error:', err.message);
+    res.status(500).json({ error: 'Failed to reset partner password' });
+  }
+});
+
+// Delete a partner. This is a SOFT delete (resellers.deleted_at) — deliberately.
+// tenants/z_chat_users/plans reference resellers(id) ON DELETE CASCADE, so a hard
+// DELETE would silently destroy the partner's customers, their logins and their
+// plan catalog. Soft-deleting hides the partner and disables their console login
+// while leaving the rows recoverable.
+//
+// Refused while the partner still has admins (tenants): those customers would be
+// orphaned — invisible to the platform owner, since owner-scoped queries match
+// `reseller_id IS NULL`. Remove/reassign them first, or suspend the partner.
+router.delete('/platform/resellers/:id', requireSuperAdmin, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { rows: found } = await client.query(
+      'SELECT id, name FROM coexistence.resellers WHERE id = $1 AND deleted_at IS NULL',
+      [req.params.id]
+    );
+    if (!found.length) return res.status(404).json({ error: 'Not found' });
+
+    const { rows: cnt } = await client.query(
+      `SELECT COUNT(*)::int AS n FROM coexistence.tenants
+        WHERE reseller_id = $1 AND deleted_at IS NULL`,
+      [req.params.id]
+    );
+    if (cnt[0].n > 0) {
+      return res.status(409).json({
+        error: `“${found[0].name}” still has ${cnt[0].n} admin account(s). Delete or reassign them first, or suspend the partner instead.`,
+        admins: cnt[0].n,
+      });
+    }
+
+    await client.query('BEGIN');
+    await client.query(
+      `UPDATE coexistence.resellers SET deleted_at = NOW(), status = 'suspended', updated_at = NOW()
+        WHERE id = $1`,
+      [req.params.id]
+    );
+    // Their console login must stop working the moment the partner is gone —
+    // deleted_at on the reseller alone would not block the user's session.
+    const { rowCount: disabled } = await client.query(
+      `UPDATE coexistence.z_chat_users SET is_active = FALSE, updated_at = NOW()
+        WHERE reseller_id = $1 AND tenant_id IS NULL`,
+      [req.params.id]
+    );
+    await client.query('COMMIT');
+
+    await auditLog({
+      actor: req.user, action: 'platform.reseller.delete',
+      targetType: 'reseller', targetId: req.params.id,
+      payload: { ip: clientIp(req), name: found[0].name, disabledLogins: disabled },
+    });
+    res.json({ ok: true, disabledLogins: disabled });
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch { /* ignore */ }
+    console.error('[platform] delete reseller error:', err.message);
+    res.status(500).json({ error: 'Failed to delete partner' });
+  } finally {
+    client.release();
   }
 });
 

@@ -134,8 +134,10 @@ export default function LoginGate({ onLogin, onBack }) {
             {['AI Agents', 'Broadcasts', 'Automations', 'Analytics'].map((f, i) => (
               <span key={f} style={{
                 padding: '5px 13px', borderRadius: 20,
-                border: '1px solid rgba(0,0,0,0.14)',
-                fontSize: 12, fontWeight: 500, color: 'rgba(255,255,255,0.65)',
+                border: `1px solid ${C.headerBorder}`,
+                // Theme token, not hardcoded white: the brand panel is near-white
+                // in light mode, where white text rendered the pills empty.
+                fontSize: 12, fontWeight: 500, color: C.headerMuted,
                 letterSpacing: '0.02em',
                 animation: `fadeInUp 0.4s ease-out ${0.52 + i * 0.07}s both`,
               }}>{f}</span>

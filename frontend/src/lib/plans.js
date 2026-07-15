@@ -112,3 +112,24 @@ export function minPlanForFeature(catalog, featureKey) {
 export function formatLimit(v) {
   return v == null ? 'Unlimited' : Number(v).toLocaleString();
 }
+
+// ─── Money ───────────────────────────────────────────────────────────────────
+// This is an Indian platform: plan prices are INR and are grouped the Indian way
+// (en-IN → ₹1,15,190, not ₹115,190). The single formatter for every plan/price
+// render, so the symbol and grouping can never drift between screens.
+//
+// `currency` honours the plans.currency column (default INR) so a reseller with
+// a foreign catalog still renders correctly instead of being mislabelled ₹.
+const CURRENCY_SYMBOL = { INR: '₹', USD: '$', EUR: '€', GBP: '£' };
+const CURRENCY_LOCALE = { INR: 'en-IN' };
+
+export function fmtMoney(n, currency = 'INR') {
+  const code = String(currency || 'INR').toUpperCase();
+  const sym = CURRENCY_SYMBOL[code] || `${code} `;
+  const v = Number(n || 0);
+  // Whole rupees for list prices; keep paise only for sub-100 amounts.
+  const digits = v < 100 && !Number.isInteger(v) ? 2 : 0;
+  return `${sym}${v.toLocaleString(CURRENCY_LOCALE[code] || undefined, {
+    minimumFractionDigits: digits, maximumFractionDigits: digits,
+  })}`;
+}
