@@ -12,7 +12,8 @@ const { auditLog } = require('./middleware/access');
 
 async function loadUserSession(userId) {
   const { rows } = await pool.query(
-    `SELECT id, username, email, display_name, role, permissions, is_active, last_login_at, tenant_id, reseller_id
+    `SELECT id, username, email, display_name, role, permissions, is_active, last_login_at,
+            tenant_id, reseller_id, password_set, signup_source, fb_user_id
        FROM coexistence.z_chat_users WHERE id = $1`,
     [userId]
   );
@@ -52,6 +53,15 @@ async function loadUserSession(userId) {
     resellerId: u.reseller_id ?? null,
     isSuperAdmin,
     isResellerAdmin,
+    // FALSE for a Facebook signup that has never chosen a password — the UI uses
+    // this to prompt them to set one, so losing Facebook access isn't terminal.
+    // `!== false` tolerates the column not existing yet (pre-migration boot).
+    passwordSet: u.password_set !== false,
+    signupSource: u.signup_source || 'invite',
+    // Whether "Sign in with Facebook" will actually work for this account. It
+    // only does once fb_user_id is set — which, before the explicit link action,
+    // effectively never happened for anyone who signed up with a password.
+    facebookLinked: !!u.fb_user_id,
   };
 }
 
@@ -75,6 +85,43 @@ const COOKIE_NAME = 'z_chat_token';
 const TOKEN_EXPIRY = '24h';
 
 const router = Router();
+
+// Is the account's WORKSPACE and PARTNER still live?
+//
+// Authorization used to rest entirely on mutating user rows at delete time
+// (is_active = FALSE). That is fragile: anything the delete UPDATE misses stays
+// able to sign in forever, and suspending a partner didn't touch user rows at
+// all — so it blocked nothing. Checking liveness here, at login, makes the rule
+// true by construction instead of by remembering to write it everywhere.
+//
+// Returns null when fine, or a { status, error } to reject with.
+async function workspaceBlock(userId) {
+  const { rows } = await pool.query(
+    `SELECT t.deleted_at            AS tenant_deleted,
+            t.id                    AS tenant_id,
+            r.status                AS reseller_status,
+            r.deleted_at            AS reseller_deleted
+       FROM coexistence.z_chat_users u
+       LEFT JOIN coexistence.tenants   t ON t.id = u.tenant_id
+       -- A partner's own console admin carries reseller_id directly; an ordinary
+       -- tenant user inherits their partner through tenants.reseller_id.
+       LEFT JOIN coexistence.resellers r ON r.id = COALESCE(u.reseller_id, t.reseller_id)
+      WHERE u.id = $1`,
+    [userId]
+  );
+  const row = rows[0];
+  if (!row) return null;
+  if (row.tenant_id != null && row.tenant_deleted != null) {
+    return { status: 403, error: 'This workspace has been closed. Contact your administrator.' };
+  }
+  if (row.reseller_deleted != null) {
+    return { status: 403, error: 'This workspace is no longer available. Contact your administrator.' };
+  }
+  if (row.reseller_status && row.reseller_status !== 'active') {
+    return { status: 403, error: 'This workspace is temporarily suspended. Contact your administrator.' };
+  }
+  return null;
+}
 
 // May this account sign in, verification-wise? Only self-serve signups are ever
 // gated, and only while a mailer exists to send the link:
@@ -192,8 +239,19 @@ async function authMiddleware(req, res, next) {
     // user loses access immediately, instead of keeping their old privileges
     // until the 24h token expires. The fresh role also overrides any stale role
     // embedded in the JWT (an admin who demotes a user takes effect at once).
+    // Same single round-trip, extended with workspace liveness: a closed tenant
+    // or a suspended/deleted partner must revoke access NOW, not whenever the
+    // 24h token happens to expire. Same reasoning as the live role check.
     const { rows } = await pool.query(
-      'SELECT role, is_active FROM coexistence.z_chat_users WHERE id = $1',
+      `SELECT u.role, u.is_active,
+              u.tenant_id,
+              t.deleted_at AS tenant_deleted,
+              r.status     AS reseller_status,
+              r.deleted_at AS reseller_deleted
+         FROM coexistence.z_chat_users u
+         LEFT JOIN coexistence.tenants   t ON t.id = u.tenant_id
+         LEFT JOIN coexistence.resellers r ON r.id = COALESCE(u.reseller_id, t.reseller_id)
+        WHERE u.id = $1`,
       [payload.id]
     );
     const u = rows[0];
@@ -204,6 +262,14 @@ async function authMiddleware(req, res, next) {
     if (u.is_active === false) {
       res.clearCookie(COOKIE_NAME);
       return res.status(403).json({ error: 'Account disabled' });
+    }
+    if (u.tenant_id != null && u.tenant_deleted != null) {
+      res.clearCookie(COOKIE_NAME);
+      return res.status(403).json({ error: 'This workspace has been closed.' });
+    }
+    if (u.reseller_deleted != null || (u.reseller_status && u.reseller_status !== 'active')) {
+      res.clearCookie(COOKIE_NAME);
+      return res.status(403).json({ error: 'This workspace is unavailable. Contact your administrator.' });
     }
     req.user = { ...payload, role: u.role };
     next();
@@ -237,6 +303,8 @@ router.post('/auth/login', async (req, res) => {
         code: 'EMAIL_NOT_VERIFIED',
       });
     }
+    const blocked = await workspaceBlock(user.id);
+    if (blocked) return res.status(blocked.status).json({ error: blocked.error });
     const token = signToken(user);
     setAuthCookie(res, token);
     // Best-effort: stamp last_login_at; don't fail login if this errors.
@@ -272,6 +340,10 @@ router.post('/auth/facebook', async (req, res) => {
     if (user.is_active === false) {
       return res.status(403).json({ error: 'Account is disabled. Contact an administrator.' });
     }
+    // Facebook sign-in is a login like any other — it must honour a closed
+    // workspace or a suspended partner too, or it becomes the way around them.
+    const fbBlocked = await workspaceBlock(user.id);
+    if (fbBlocked) return res.status(fbBlocked.status).json({ error: fbBlocked.error });
     const token = signToken(user);
     setAuthCookie(res, token);
     pool.query(`UPDATE coexistence.z_chat_users SET last_login_at = NOW() WHERE id = $1`, [user.id]).catch(() => {});
@@ -306,10 +378,10 @@ async function signUpWithFacebook(req, res, { fbUserId, accessToken }) {
       await client.query('ROLLBACK');
       // Deliberately NOT auto-linking to the existing account. Adopting an
       // account because Facebook asserts the same address is an account-takeover
-      // path; linking stays an authenticated action (connect WhatsApp while
-      // signed in), which is how fb_user_id gets set today.
+      // path; linking stays an authenticated action — see POST /auth/link-facebook,
+      // which is what the message below points at.
       return res.status(409).json({
-        error: 'An account already uses this email. Sign in with your password, then connect Facebook from inside the app.',
+        error: 'An account already uses this email. Sign in with your password, then connect Facebook from your account menu (Account & security).',
         code: 'FB_EMAIL_TAKEN',
       });
     }
@@ -321,6 +393,9 @@ async function signUpWithFacebook(req, res, { fbUserId, accessToken }) {
       partnerSlug: req.body?.partnerSlug || null,
       fbUserId,
       source: 'facebook',
+      // The Facebook button carries the consent notice inline (there is no form
+      // to tick), so completing Meta's dialog is the affirmative act.
+      acceptedTerms: true,
     });
     // No verification link: Facebook already vouches for the address, and the
     // person is standing right here having just authenticated with Meta.
@@ -345,6 +420,9 @@ async function signUpWithFacebook(req, res, { fbUserId, accessToken }) {
     return res.status(201).json({ user: session, created: true });
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch { /* ignore */ }
+    if (err && err.code === 'PARTNER_UNAVAILABLE') {
+      return res.status(409).json({ error: err.message, code: 'PARTNER_UNAVAILABLE' });
+    }
     console.error('[auth] facebook signup error:', err.message);
     return res.status(500).json({ error: 'Could not create your account. Please try again.' });
   } finally {
@@ -452,6 +530,11 @@ router.post('/auth/signup', signupLimiter, async (req, res) => {
   if (!email || !password) return res.status(400).json({ error: 'Email and password are required' });
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: 'Enter a valid email address' });
   if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
+  // Consent is checked server-side, not just in the form: our privacy policy
+  // asserts the user agreed to it, so we must actually hold evidence they did.
+  if (b.acceptedTerms !== true) {
+    return res.status(400).json({ error: 'Please accept the Terms of Service and Privacy Policy to continue.' });
+  }
 
   // The very first account must go through the setup wizard, which mints the
   // instance owner. Letting signup win that race would leave the install with no
@@ -481,6 +564,7 @@ router.post('/auth/signup', signupLimiter, async (req, res) => {
         companyName: b.companyName,
         partnerSlug: b.partnerSlug || null,
         source: 'self_serve',
+        acceptedTerms: true,
       });
       const mustVerify = verification.verificationRequired();
       const rawToken = mustVerify ? await verification.issueToken(client, ws.userId) : null;
@@ -518,6 +602,12 @@ router.post('/auth/signup', signupLimiter, async (req, res) => {
     } catch (err) {
       try { await client.query('ROLLBACK'); } catch { /* ignore */ }
       if (err && err.code === '23505' && attempt < 2) continue; // lost a race — rebuild and retry
+      // A suspended/deleted partner is a real answer, not a server fault. Saying
+      // "try again" would be a lie, and silently signing them up as our own
+      // customer would be worse.
+      if (err && err.code === 'PARTNER_UNAVAILABLE') {
+        return res.status(409).json({ error: err.message, code: 'PARTNER_UNAVAILABLE' });
+      }
       console.error('[auth] signup error:', err.message);
       return res.status(500).json({ error: 'Could not create your account. Please try again.' });
     } finally {
@@ -584,6 +674,208 @@ router.post('/auth/resend-verification', signupLimiter, async (req, res) => {
     res.json(ok);
   } finally {
     client.release();
+  }
+});
+
+// POST /api/auth/forgot-password — public. Body: { email }.
+//
+// Self-serve signup creates a workspace with exactly ONE admin. Without this,
+// forgetting that password meant nobody in the tenant could help and a platform
+// operator had to intervene by hand — every lockout became a support ticket.
+//
+// Always reports the same thing: a different response for a known vs unknown
+// address turns this into an account-enumeration oracle.
+router.post('/auth/forgot-password', signupLimiter, async (req, res) => {
+  const email = String((req.body || {}).email || '').trim().toLowerCase();
+  const generic = {
+    ok: true,
+    message: 'If an account exists for that address, we\'ve sent a link to reset its password.',
+  };
+  // No mailer: say so plainly instead of pretending we sent something. The user
+  // would otherwise wait forever for an email that was never going to arrive.
+  if (!verification.verificationRequired()) {
+    return res.json({
+      ok: false,
+      code: 'NO_MAILER',
+      message: 'Password reset by email isn\'t available on this server. Please contact your administrator to have your password reset.',
+    });
+  }
+  if (!email) return res.json(generic);
+  const client = await pool.connect();
+  try {
+    const { rows } = await client.query(
+      `SELECT u.id, u.email, t.reseller_id
+         FROM coexistence.z_chat_users u
+         LEFT JOIN coexistence.tenants t ON t.id = u.tenant_id
+        WHERE u.email = $1 AND u.is_active = TRUE`,
+      [email]
+    );
+    if (!rows.length) return res.json(generic);
+    await client.query('BEGIN');
+    const raw = await verification.issueToken(client, rows[0].id, 'reset');
+    await client.query('COMMIT');
+    const brandName = await brandNameFor(rows[0].reseller_id);
+    const sent = await verification.sendResetEmail({ to: rows[0].email, token: raw, brandName });
+    if (!sent.ok) console.error('[auth] reset email failed:', sent.error);
+    res.json(generic);
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch { /* ignore */ }
+    console.error('[auth] forgot-password error:', err.message);
+    res.json(generic);
+  } finally {
+    client.release();
+  }
+});
+
+// POST /api/auth/reset-password — public. Body: { token, password }.
+// Consumes the emailed reset token and signs them straight in.
+router.post('/auth/reset-password', async (req, res) => {
+  const { token, password } = req.body || {};
+  if (!password || String(password).length < 8) {
+    return res.status(400).json({ error: 'Password must be at least 8 characters' });
+  }
+  // 'reset' purpose: a verification token must never be spendable as a reset.
+  const result = await verification.consumeToken(token, 'reset');
+  if (!result.ok) {
+    return res.status(400).json({
+      error: 'This reset link is invalid or has expired. Request a new one.',
+      code: 'RESET_INVALID',
+    });
+  }
+  try {
+    const hash = await bcrypt.hash(String(password), 10);
+    const { rows } = await pool.query(
+      `UPDATE coexistence.z_chat_users
+          SET password = $1, password_set = TRUE, updated_at = NOW()
+        WHERE id = $2 AND is_active = TRUE
+        RETURNING id, username, display_name, role`,
+      [hash, result.userId]
+    );
+    if (!rows.length) return res.status(403).json({ error: 'Account is disabled.' });
+    const blocked = await workspaceBlock(rows[0].id);
+    if (blocked) return res.status(blocked.status).json({ error: blocked.error });
+    setAuthCookie(res, signToken(rows[0]));
+    await auditLog({ actor: rows[0], action: 'auth.password_reset', targetType: 'user', targetId: rows[0].id, from: req });
+    const session = await loadUserSession(rows[0].id);
+    res.json({ user: session });
+  } catch (err) {
+    console.error('[auth] reset-password error:', err.message);
+    res.status(500).json({ error: 'Could not reset your password.' });
+  }
+});
+
+// POST /api/auth/set-password — authenticated. Body: { currentPassword?, newPassword }.
+//
+// Also the escape hatch for a Facebook signup: their stored hash is of random
+// bytes nobody knows, so requiring a current password would make it impossible
+// for them to ever gain a password — the exact trap that left them one lost
+// Facebook account away from being locked out permanently. When password_set is
+// FALSE the session itself is the proof of identity.
+router.post('/auth/set-password', authMiddleware, async (req, res) => {
+  const { currentPassword, newPassword } = req.body || {};
+  if (!newPassword || String(newPassword).length < 8) {
+    return res.status(400).json({ error: 'New password must be at least 8 characters' });
+  }
+  try {
+    const { rows } = await pool.query(
+      'SELECT id, username, password, password_set, display_name, role FROM coexistence.z_chat_users WHERE id = $1',
+      [req.user.id]
+    );
+    const user = rows[0];
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    if (user.password_set !== false) {
+      if (!currentPassword) return res.status(400).json({ error: 'Your current password is required' });
+      if (!(await bcrypt.compare(String(currentPassword), user.password))) {
+        return res.status(403).json({ error: 'That current password is incorrect' });
+      }
+    }
+    const hash = await bcrypt.hash(String(newPassword), 10);
+    await pool.query(
+      `UPDATE coexistence.z_chat_users SET password = $1, password_set = TRUE, updated_at = NOW() WHERE id = $2`,
+      [hash, user.id]
+    );
+    await auditLog({ actor: req.user, action: 'auth.password_set', targetType: 'user', targetId: user.id, from: req });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[auth] set-password error:', err.message);
+    res.status(500).json({ error: 'Could not update your password.' });
+  }
+});
+
+// POST /api/auth/link-facebook — authenticated. Body: { accessToken }.
+//
+// The action that "Sign in with Facebook" always depended on and that never
+// existed. The only code that set fb_user_id was the Embedded Signup route, and
+// it required a `fbUserId` the client can't supply: that flow uses
+// response_type:'code', where Meta returns a code and no userID. So the link
+// never fired, and anyone who signed up with a password could never use Facebook
+// sign-in — while being told to "connect Facebook from inside the app".
+//
+// This is a plain identity login (token flow), so we get a real user token and
+// can verify it server-side. The browser's claim about who they are is never
+// trusted: verifyTokenOwner re-checks the token against Meta and confirms it was
+// minted for OUR app before we believe the id.
+router.post('/auth/link-facebook', authMiddleware, async (req, res) => {
+  if (!facebookAuth.isConfigured()) {
+    return res.status(400).json({ error: 'Facebook is not enabled on this server.' });
+  }
+  const { accessToken } = req.body || {};
+  if (!accessToken) return res.status(400).json({ error: 'Facebook access token required' });
+  try {
+    const { fbUserId } = await facebookAuth.verifyTokenOwner(accessToken);
+    const { rowCount } = await pool.query(
+      `UPDATE coexistence.z_chat_users SET fb_user_id = $1, updated_at = NOW() WHERE id = $2`,
+      [fbUserId, req.user.id]
+    );
+    if (!rowCount) return res.status(404).json({ error: 'User not found' });
+    await auditLog({
+      actor: req.user, action: 'auth.facebook_linked',
+      targetType: 'user', targetId: req.user.id, from: req,
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    // The partial unique index on fb_user_id means one Facebook identity can own
+    // at most one account — otherwise two people could sign in as each other.
+    if (err && err.code === '23505') {
+      return res.status(409).json({
+        error: 'That Facebook account is already linked to a different login.',
+        code: 'FB_ALREADY_LINKED',
+      });
+    }
+    console.error('[auth] link-facebook error:', err.message);
+    res.status(400).json({ error: 'Could not verify that Facebook account. Please try again.' });
+  }
+});
+
+// POST /api/auth/unlink-facebook — authenticated.
+router.post('/auth/unlink-facebook', authMiddleware, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT password_set FROM coexistence.z_chat_users WHERE id = $1', [req.user.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'User not found' });
+    // Refuse to remove someone's ONLY way in. A Facebook signup has a password
+    // hash of random bytes nobody knows, so unlinking without setting a password
+    // first would lock them out of their own workspace permanently.
+    if (rows[0].password_set === false) {
+      return res.status(409).json({
+        error: 'Set a password first — Facebook is currently the only way you can sign in.',
+        code: 'NEEDS_PASSWORD',
+      });
+    }
+    await pool.query(
+      `UPDATE coexistence.z_chat_users SET fb_user_id = NULL, updated_at = NOW() WHERE id = $1`,
+      [req.user.id]
+    );
+    await auditLog({
+      actor: req.user, action: 'auth.facebook_unlinked',
+      targetType: 'user', targetId: req.user.id, from: req,
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[auth] unlink-facebook error:', err.message);
+    res.status(500).json({ error: 'Could not disconnect Facebook.' });
   }
 });
 

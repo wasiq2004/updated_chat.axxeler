@@ -56,38 +56,65 @@ async function findFree(client, table, column, base, fallback) {
   throw new Error(`Could not allocate a unique ${table}.${column}`);
 }
 
-// Resolve ?w=<slug> to a live partner. Unknown/suspended/deleted slugs resolve
-// to NULL — the visitor becomes a platform-direct customer rather than being
-// rejected, matching how the public branding endpoint degrades.
-async function resolveResellerId(client, slug) {
+// Resolve ?w=<slug> to a partner.
+//
+// Returns { id } for a live partner, null for an unknown slug (the visitor is
+// simply platform-direct — a typo shouldn't reject them), or { blocked: true }
+// when the slug names a REAL partner who is suspended or deleted.
+//
+// That distinction matters commercially. Treating suspended the same as unknown
+// meant the partner's own prospect, arriving on the partner's own link, silently
+// became the platform owner's customer with the platform's plans — and there is
+// no un-assign. Suspension is a temporary billing lever; it must not double as
+// lead confiscation. We refuse the signup instead.
+async function resolveReseller(client, slug) {
   if (!slug) return null;
   const { rows } = await client.query(
-    `SELECT id FROM coexistence.resellers
-      WHERE slug = $1 AND status = 'active' AND deleted_at IS NULL`,
+    `SELECT id, status, deleted_at FROM coexistence.resellers WHERE slug = $1`,
     [String(slug).toLowerCase()]
   );
-  return rows.length ? rows[0].id : null;
+  if (!rows.length) return null;
+  const r = rows[0];
+  if (r.deleted_at != null || r.status !== 'active') return { blocked: true };
+  return { id: r.id };
 }
 
-// The plan a brand-new workspace starts on: the free entry plan of whichever
-// catalog owns this customer. A partner may not have seeded a 'starter', so
-// fall back to the cheapest active plan in their catalog, then to the platform
-// catalog. Returns null only if no plan exists anywhere, which leaves the tenant
-// without a subscription (entitlements then treat it as locked).
+// Back-compat helper: the id only, for callers that don't care why.
+async function resolveResellerId(client, slug) {
+  const r = await resolveReseller(client, slug);
+  return r && !r.blocked ? r.id : null;
+}
+
+// The entry plan a brand-new workspace starts on, from whichever catalog owns
+// this customer.
+//
+// 'enterprise' is EXCLUDED, not merely ranked last. The seeded enterprise plan is
+// priced 0 (it means "Custom — call us") with unlimited seats and all 12
+// features. Ordering by price alone therefore handed unlimited Enterprise, free
+// and forever, to every signup under any catalog that had no plan keyed
+// 'starter'. Price is not a safe proxy for "entry tier" while 0 is overloaded to
+// mean both "free" and "POA".
+//
+// Order: an explicit 'starter' wins; else the operator's own ordering
+// (position), then price. Returns null only if no plan exists anywhere.
+const ENTRY_PLAN_ORDER = `ORDER BY (key = 'starter') DESC, position ASC, price_monthly ASC`;
+
 async function pickStarterPlan(client, resellerId) {
   const { rows } = await client.query(
     `SELECT id FROM coexistence.plans
-      WHERE reseller_id IS NOT DISTINCT FROM $1 AND is_active
-      ORDER BY (key = 'starter') DESC, price_monthly ASC, position ASC
+      WHERE reseller_id IS NOT DISTINCT FROM $1 AND is_active AND key <> 'enterprise'
+      ${ENTRY_PLAN_ORDER}
       LIMIT 1`,
     [resellerId]
   );
   if (rows.length) return rows[0].id;
   if (resellerId == null) return null;
+  // A partner with no usable catalog of their own falls back to the platform
+  // entry plan rather than to their own Enterprise.
   const { rows: platform } = await client.query(
     `SELECT id FROM coexistence.plans
-      WHERE reseller_id IS NULL AND is_active
-      ORDER BY (key = 'starter') DESC, price_monthly ASC, position ASC
+      WHERE reseller_id IS NULL AND is_active AND key <> 'enterprise'
+      ${ENTRY_PLAN_ORDER}
       LIMIT 1`
   );
   return platform.length ? platform[0].id : null;
@@ -116,12 +143,19 @@ async function createWorkspace(client, {
   partnerSlug = null,
   fbUserId = null,
   source = 'self_serve',
+  acceptedTerms = false,
 }) {
   const cleanEmail = String(email).trim().toLowerCase();
   const name = String(displayName || '').trim() || cleanEmail.split('@')[0];
   const company = String(companyName || '').trim() || `${name}'s workspace`;
 
-  const resellerId = await resolveResellerId(client, partnerSlug);
+  const partner = await resolveReseller(client, partnerSlug);
+  if (partner?.blocked) {
+    const err = new Error('Sign-ups are currently unavailable for this partner. Please contact them directly.');
+    err.code = 'PARTNER_UNAVAILABLE';
+    throw err;
+  }
+  const resellerId = partner?.id ?? null;
   const planId = await pickStarterPlan(client, resellerId);
 
   const username = await findFree(client, 'z_chat_users', 'username', usernameBase(cleanEmail), 'user');
@@ -142,10 +176,16 @@ async function createWorkspace(client, {
   const organizationId = oRows[0].id;
 
   if (planId) {
+    // current_period_end is NULL for a FREE plan — "never expires", the same
+    // convention the sweeper and the bootstrap tenant already use. Stamping a
+    // period on a zero-price plan meant every free signup went past_due at day
+    // 30 and lost all access at day 33: the funnel expired on a timer.
     await client.query(
       `INSERT INTO coexistence.subscriptions
          (tenant_id, plan_id, status, billing_cycle, current_period_start, current_period_end)
-       VALUES ($1, $2, 'active', 'monthly', NOW(), NOW() + INTERVAL '1 month')`,
+       SELECT $1, $2, 'active', 'monthly', NOW(),
+              CASE WHEN p.price_monthly = 0 THEN NULL ELSE NOW() + INTERVAL '1 month' END
+         FROM coexistence.plans p WHERE p.id = $2`,
       [tenantId, planId]
     );
   }
@@ -158,13 +198,22 @@ async function createWorkspace(client, {
 
   // role='admin' (not the column default 'viewer'): this person owns the
   // workspace. 'viewer' only grants ['home','about'], so they could not work.
+  //
+  // password_set = FALSE for a Facebook signup: the stored hash is of random
+  // bytes nobody has ever seen, so /auth/login can never match it. The flag is
+  // what lets us offer "set a password" instead of stranding them if they ever
+  // lose Facebook access.
   const { rows: uRows } = await client.query(
     `INSERT INTO coexistence.z_chat_users
        (username, email, password, display_name, role, tenant_id, reseller_id,
-        fb_user_id, is_active, signup_source)
-     VALUES ($1, $2, $3, $4, 'admin', $5, NULL, $6, TRUE, $7)
+        fb_user_id, is_active, signup_source, password_set, terms_accepted_at)
+     VALUES ($1, $2, $3, $4, 'admin', $5, NULL, $6, TRUE, $7, $8, $9)
      RETURNING id`,
-    [username, cleanEmail, hash, name.slice(0, 120), tenantId, fbUserId, source]
+    [
+      username, cleanEmail, hash, name.slice(0, 120), tenantId, fbUserId, source,
+      !!password,
+      acceptedTerms ? new Date() : null,
+    ]
   );
   const userId = uRows[0].id;
 
@@ -189,4 +238,6 @@ async function createWorkspace(client, {
   return { userId, tenantId, organizationId, planId, resellerId, username, slug };
 }
 
-module.exports = { createWorkspace, emailTaken, resolveResellerId, slugify, usernameBase };
+module.exports = {
+  createWorkspace, emailTaken, resolveReseller, resolveResellerId, slugify, usernameBase,
+};

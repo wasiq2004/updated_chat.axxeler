@@ -80,6 +80,11 @@ router.get('/billing/entitlements', async (req, res) => {
       }
       return res.json({
         isSuperAdmin: !!req.isSuperAdmin,
+        // A console user (platform owner or partner admin) has no workspace of
+        // their own, so there is nothing for them to buy. The UI needs this to
+        // know not to render "Upgrade" buttons that can only ever 400.
+        hasWorkspace: false,
+        isResellerAdmin: !!req.isResellerAdmin,
         branding,
         plan: null,
         status: null,
@@ -120,6 +125,8 @@ router.get('/billing/entitlements', async (req, res) => {
 
     res.json({
       isSuperAdmin: false,
+      hasWorkspace: true,
+      isResellerAdmin: false,
       tenantName: tRows[0]?.name || null,
       branding: {
         brandName: resolvedBrandName,
@@ -168,7 +175,10 @@ function shapeRequest(r) {
     planName: r.plan_name,
     priceMonthly: r.price_monthly,
     priceYearly: r.price_yearly,
-    currency: r.currency,
+    // The price agreed at request time — what we quoted, not what the plan says
+    // today. Falls back to the live price for rows predating the snapshot.
+    priceAgreed: r.price_at_request ?? (r.billing_cycle === 'yearly' ? r.price_yearly : r.price_monthly),
+    currency: r.currency_at_request || r.currency,
     billingCycle: r.billing_cycle,
     status: r.status,
     note: r.note,
@@ -212,11 +222,16 @@ router.post('/billing/plan-request', async (req, res) => {
     // to request another partner's plan by guessing its key.
     const rid = await resellerOfTenant(req.tenantId);
     const { rows: planRows } = await client.query(
-      `SELECT id, key, name FROM coexistence.plans
+      `SELECT id, key, name, price_monthly, price_yearly, currency FROM coexistence.plans
         WHERE key = $1 AND is_active AND reseller_id IS NOT DISTINCT FROM $2`,
       [planKey, rid]
     );
     if (!planRows.length) return res.status(400).json({ error: `Unknown plan '${planKey}'` });
+    // Snapshot the price the customer is agreeing to RIGHT NOW. plan_id is a FK
+    // to a mutable row: without this, an operator editing the price between
+    // request and approval means the customer agreed to one number and gets
+    // charged another, with no record that the first ever existed.
+    const agreedPrice = cycle === 'yearly' ? planRows[0].price_yearly : planRows[0].price_monthly;
 
     await client.query('BEGIN');
     await client.query(
@@ -225,9 +240,13 @@ router.post('/billing/plan-request', async (req, res) => {
       [req.tenantId]
     );
     const { rows } = await client.query(
-      `INSERT INTO coexistence.plan_requests (tenant_id, plan_id, billing_cycle, note, requested_by)
-       VALUES ($1, $2, $3, $4, $5) RETURNING id, created_at`,
-      [req.tenantId, planRows[0].id, cycle, note ? String(note).slice(0, 500) : null, req.user.id]
+      `INSERT INTO coexistence.plan_requests
+         (tenant_id, plan_id, billing_cycle, note, requested_by, price_at_request, currency_at_request)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, created_at`,
+      [
+        req.tenantId, planRows[0].id, cycle, note ? String(note).slice(0, 500) : null, req.user.id,
+        agreedPrice, planRows[0].currency,
+      ]
     );
     await client.query('COMMIT');
 

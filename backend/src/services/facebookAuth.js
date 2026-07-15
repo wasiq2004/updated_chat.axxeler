@@ -9,6 +9,8 @@
 // so the whole feature is inert until an operator configures a Meta app. Nothing
 // here ever logs a token or secret.
 
+const crypto = require('crypto');
+
 const FB_APP_ID = () => (process.env.FB_APP_ID || '').trim();
 const FB_APP_SECRET = () => (process.env.FB_APP_SECRET || '').trim();
 const FB_LOGIN_CONFIG_ID = () => (process.env.FB_LOGIN_CONFIG_ID || '').trim();
@@ -136,6 +138,55 @@ async function subscribeAppToWaba(wabaId, accessToken) {
   }
 }
 
+/**
+ * A six-digit two-step verification PIN for Cloud API registration.
+ * crypto.randomInt (not Math.random) — this PIN guards the number's
+ * registration, so it must not be predictable from a seeded PRNG.
+ */
+function generateTwoStepPin() {
+  return String(crypto.randomInt(0, 1000000)).padStart(6, '0');
+}
+
+/**
+ * Register a phone number with the WhatsApp Cloud API — the final, REQUIRED step
+ * of Embedded Signup. Until this succeeds the number exists in Business Manager
+ * but cannot send a single message.
+ *
+ * Returns { ok } / { ok:false, error, code }. Meta error codes worth knowing:
+ *   133005 — two-step PIN mismatch: the number already has a PIN we don't know.
+ *   133010 — not yet verified.
+ *   133006 — the number must be re-verified before registering.
+ * The caller decides what to do; a failure here should not throw away the
+ * connection itself.
+ */
+async function registerPhoneNumber(phoneNumberId, accessToken, pin) {
+  if (!phoneNumberId || !accessToken || !pin) return { ok: false, skipped: true };
+  try {
+    const url = `${GRAPH()}/${encodeURIComponent(phoneNumberId)}/register`;
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ messaging_product: 'whatsapp', pin: String(pin) }),
+    });
+    const text = await resp.text();
+    let body = {};
+    try { body = JSON.parse(text); } catch { /* non-JSON */ }
+    if (!resp.ok) {
+      return {
+        ok: false,
+        error: body?.error?.error_user_msg || body?.error?.message || `HTTP ${resp.status}`,
+        code: body?.error?.code ?? null,
+      };
+    }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
 module.exports = {
   isConfigured,
   canExchange,
@@ -143,5 +194,7 @@ module.exports = {
   exchangeCodeForToken,
   verifyTokenOwner,
   fetchProfile,
+  generateTwoStepPin,
+  registerPhoneNumber,
   subscribeAppToWaba,
 };

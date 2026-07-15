@@ -35,23 +35,29 @@ function appUrl() {
   return (explicit || corsFirst || 'http://localhost:5173').replace(/\/+$/, '');
 }
 
-// Issue a fresh token, invalidating any outstanding one for this user so a
-// resend can't leave two live links. Runs on the caller's client so it can join
-// the signup transaction.
-async function issueToken(client, userId) {
+// Issue a fresh token, invalidating any outstanding one for this user AND
+// purpose so a resend can't leave two live links. Scoped by purpose so a pending
+// password reset doesn't silently kill a pending email verification.
+// Runs on the caller's client so it can join the signup transaction.
+async function issueToken(client, userId, purpose = 'verify') {
   await client.query(
     `UPDATE coexistence.email_verification_tokens
         SET consumed_at = NOW()
-      WHERE user_id = $1 AND consumed_at IS NULL`,
-    [userId]
+      WHERE user_id = $1 AND purpose = $2 AND consumed_at IS NULL`,
+    [userId, purpose]
   );
   const raw = crypto.randomBytes(32).toString('base64url');
   await client.query(
-    `INSERT INTO coexistence.email_verification_tokens (user_id, token_hash, expires_at)
-     VALUES ($1, $2, NOW() + INTERVAL '${TOKEN_TTL_HOURS} hours')`,
-    [userId, hashToken(raw)]
+    `INSERT INTO coexistence.email_verification_tokens (user_id, token_hash, expires_at, purpose)
+     VALUES ($1, $2, NOW() + INTERVAL '${RESET_TTL_HOURS(purpose)} hours', $3)`,
+    [userId, hashToken(raw), purpose]
   );
   return raw;
+}
+
+// A reset link is a live credential — a shorter window than an activation link.
+function RESET_TTL_HOURS(purpose) {
+  return purpose === 'reset' ? 1 : TOKEN_TTL_HOURS;
 }
 
 // Best-effort delivery: a mail failure must not roll back a created account.
@@ -66,10 +72,25 @@ async function sendVerificationEmail({ to, token, brandName = 'Zen Chat' }) {
   return sendMail({ to, subject: `Confirm your ${brandName} account`, text });
 }
 
+// Send a password-reset link. Best-effort, same as verification.
+async function sendResetEmail({ to, token, brandName = 'Zen Chat' }) {
+  const link = `${appUrl()}/?reset=${encodeURIComponent(token)}`;
+  const text =
+    `Someone asked to reset the password for your ${brandName} account.\n\n` +
+    `Set a new password here:\n\n${link}\n\n` +
+    `This link expires in 1 hour and can only be used once.\n\n` +
+    `If this wasn't you, ignore this email — your password hasn't changed.`;
+  return sendMail({ to, subject: `Reset your ${brandName} password`, text });
+}
+
 // Consume a token and mark the user verified. Returns { ok, userId } or
 // { ok:false, reason }. Single-use: the UPDATE ... WHERE consumed_at IS NULL
 // makes a double-click of the emailed link a no-op rather than an error path.
-async function consumeToken(raw) {
+//
+// `purpose` is part of the match: a verification token must never be usable to
+// reset a password, or an old activation link becomes a permanent account
+// takeover.
+async function consumeToken(raw, purpose = 'verify') {
   if (!raw) return { ok: false, reason: 'missing' };
   const client = await pool.connect();
   try {
@@ -77,9 +98,9 @@ async function consumeToken(raw) {
     const { rows } = await client.query(
       `UPDATE coexistence.email_verification_tokens
           SET consumed_at = NOW()
-        WHERE token_hash = $1 AND consumed_at IS NULL AND expires_at > NOW()
+        WHERE token_hash = $1 AND purpose = $2 AND consumed_at IS NULL AND expires_at > NOW()
         RETURNING user_id`,
-      [hashToken(raw)]
+      [hashToken(raw), purpose]
     );
     if (!rows.length) {
       await client.query('ROLLBACK');
@@ -104,5 +125,6 @@ async function consumeToken(raw) {
 }
 
 module.exports = {
-  verificationRequired, issueToken, sendVerificationEmail, consumeToken, appUrl, hashToken,
+  verificationRequired, issueToken, sendVerificationEmail, sendResetEmail,
+  consumeToken, appUrl, hashToken,
 };

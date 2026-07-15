@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { X, ShieldCheck, Zap, PlugZap, CheckCircle2, Loader2 } from 'lucide-react';
+import { X, ShieldCheck, Zap, PlugZap, CheckCircle2, Loader2, AlertTriangle } from 'lucide-react';
 import { api } from '../api.js';
 import { C, FONT } from '../constants.js';
 import { loadFacebookSdk, fbLogin } from '../lib/facebook.js';
@@ -17,7 +17,9 @@ export default function ConnectWhatsAppModal({ onClose, onConnected }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [done, setDone] = useState(false);
+  const [warning, setWarning] = useState('');
   const sessionRef = useRef(null); // { wabaId, phoneNumberId } from the FB message event
+  const errorRef = useRef(null);   // error_message from a CANCEL/ERROR event
 
   // Meta posts the WhatsApp Business + Phone IDs to the opener via postMessage
   // during Embedded Signup. Capture them for the code-exchange call.
@@ -29,12 +31,20 @@ export default function ConnectWhatsAppModal({ onClose, onConnected }) {
       if (typeof event.data !== 'string') return;
       let data;
       try { data = JSON.parse(event.data); } catch { return; }
-      if (data.type === 'WA_EMBEDDED_SIGNUP' && data.data) {
-        sessionRef.current = {
-          wabaId: data.data.waba_id || data.data.wabaId || null,
-          phoneNumberId: data.data.phone_number_id || data.data.phoneNumberId || null,
-        };
+      if (data.type !== 'WA_EMBEDDED_SIGNUP' || !data.data) return;
+      // Meta sends event: 'FINISH' | 'CANCEL' | 'ERROR'. Only FINISH means the
+      // person completed every step. A CANCEL/ERROR can still carry partial data
+      // (e.g. a waba_id chosen before they bailed) — treating that as success
+      // would post a half-finished signup to the backend.
+      if (data.event && data.event !== 'FINISH') {
+        sessionRef.current = null;
+        errorRef.current = data.data.error_message || null;
+        return;
       }
+      sessionRef.current = {
+        wabaId: data.data.waba_id || null,
+        phoneNumberId: data.data.phone_number_id || null,
+      };
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
@@ -49,6 +59,8 @@ export default function ConnectWhatsAppModal({ onClose, onConnected }) {
       if (!cfg.configId) { setError('Embedded Signup isn’t configured (missing config id). Contact your administrator.'); return; }
 
       sessionRef.current = null;
+      errorRef.current = null;
+      setWarning('');
       const resp = await fbLogin({
         config_id: cfg.configId,
         response_type: 'code',
@@ -61,16 +73,30 @@ export default function ConnectWhatsAppModal({ onClose, onConnected }) {
 
       const session = sessionRef.current || {};
       if (!session.wabaId || !session.phoneNumberId) {
-        setError('Couldn’t read your WhatsApp Business details from Facebook. Please try again and finish every step.');
+        // Prefer Meta's own reason when the flow reported one — "please try
+        // again" is useless when the real cause was e.g. an unverified business.
+        setError(errorRef.current
+          || 'Couldn’t read your WhatsApp Business details from Facebook. Please try again and finish every step.');
         return;
       }
 
-      await api.whatsappAccounts.embeddedSignup({
+      const result = await api.whatsappAccounts.embeddedSignup({
         code,
         wabaId: session.wabaId,
         phoneNumberId: session.phoneNumberId,
         fbUserId: resp?.authResponse?.userID || null,
       });
+
+      // The number is saved either way, but if Meta refused to register it, it
+      // cannot send yet. Say so here rather than letting them discover it when
+      // their first broadcast fails.
+      if (result && result.registered === false) {
+        setWarning(
+          result.registrationCode === 133005
+            ? 'Connected — but this number already has a two-step PIN we don’t know, so we couldn’t finish registering it. Reset the PIN in Meta Business Manager, then reconnect.'
+            : `Connected — but Meta couldn’t finish registering it to send messages: ${result.registrationError}`
+        );
+      }
 
       setDone(true);
       onConnected?.();
@@ -130,12 +156,29 @@ export default function ConnectWhatsAppModal({ onClose, onConnected }) {
         <div style={{ padding: '22px 28px 26px' }}>
           {done ? (
             <div style={{ textAlign: 'center', padding: '10px 0 6px' }}>
-              <CheckCircle2 size={44} color="#25D366" style={{ marginBottom: 12 }} />
-              <div style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 6 }}>WhatsApp connected!</div>
-              <p style={{ fontSize: 13, color: C.textSecondary, lineHeight: 1.55, margin: '0 0 18px' }}>
-                Your number is linked. Next time you can sign in straight from the login page with Facebook.
-              </p>
-              <button onClick={onConnected} style={primaryBtn('#25D366')}>Continue</button>
+              {/* A half-connected number is not a success. When Meta refused to
+                  register it, drop the celebration and lead with what's wrong —
+                  the number cannot send until it's resolved. */}
+              {warning ? (
+                <AlertTriangle size={44} color={C.amber} style={{ marginBottom: 12 }} />
+              ) : (
+                <CheckCircle2 size={44} color="#25D366" style={{ marginBottom: 12 }} />
+              )}
+              <div style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 6 }}>
+                {warning ? 'Almost there' : 'WhatsApp connected!'}
+              </div>
+              {warning ? (
+                <p style={{
+                  fontSize: 13, lineHeight: 1.55, margin: '0 0 18px', textAlign: 'left',
+                  background: 'rgba(245,158,11,.12)', color: '#B45309',
+                  border: '1px solid rgba(245,158,11,.3)', borderRadius: 10, padding: '11px 13px',
+                }}>{warning}</p>
+              ) : (
+                <p style={{ fontSize: 13, color: C.textSecondary, lineHeight: 1.55, margin: '0 0 18px' }}>
+                  Your number is linked. Next time you can sign in straight from the login page with Facebook.
+                </p>
+              )}
+              <button onClick={onConnected} style={primaryBtn(warning ? C.amber : '#25D366')}>Continue</button>
             </div>
           ) : (
             <>

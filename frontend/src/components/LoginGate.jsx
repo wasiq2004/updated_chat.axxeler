@@ -27,6 +27,7 @@ export default function LoginGate({ onLogin, onBack, initialMode = 'signin' }) {
   const [name, setName] = useState('');
   const [company, setCompany] = useState('');
   const [showPw, setShowPw] = useState(false);
+  const [agreed, setAgreed] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState(false);
@@ -87,12 +88,14 @@ export default function LoginGate({ onLogin, onBack, initialMode = 'signin' }) {
     e.preventDefault();
     if (!email || !password) { setError('Email and password required.'); return; }
     if (isSignup && password.length < 8) { setError('Password must be at least 8 characters.'); return; }
+    if (isSignup && !agreed) { setError('Please accept the Terms and Privacy Policy to continue.'); return; }
     setError('');
     setLoading(true);
     try {
       if (isSignup) {
         const res = await api.auth.signup({
           email, password, displayName: name, companyName: company, partnerSlug,
+          acceptedTerms: agreed,
         });
         if (res.verificationRequired) {
           setMode('sent');
@@ -120,6 +123,23 @@ export default function LoginGate({ onLogin, onBack, initialMode = 'signin' }) {
       setNotice(r.message || 'Link sent.');
     } catch {
       setNotice('Could not resend right now. Please try again shortly.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleForgot = async () => {
+    if (!email) { setError('Enter your email address first, then choose "Forgot password?".'); return; }
+    setError('');
+    setLoading(true);
+    try {
+      const r = await api.auth.forgotPassword(email);
+      // The server answers { ok:false, code:'NO_MAILER' } when it can't send —
+      // show that rather than a false "check your inbox" for mail that will
+      // never arrive.
+      setNotice(r.message || 'If an account exists for that address, we\'ve sent a reset link.');
+    } catch (err) {
+      setNotice(err.message || 'Could not start a password reset right now.');
     } finally {
       setLoading(false);
     }
@@ -344,12 +364,58 @@ export default function LoginGate({ onLogin, onBack, initialMode = 'signin' }) {
                       {showPw ? <EyeOff size={16} /> : <Eye size={16} />}
                     </button>
                   </div>
-                  {isSignup && (
+                  {isSignup ? (
                     <div style={{ fontSize: 11.5, color: C.textMuted, marginTop: 6 }}>
                       At least 8 characters.
                     </div>
+                  ) : (
+                    <div style={{ textAlign: 'right', marginTop: 8 }}>
+                      <button
+                        type="button"
+                        onClick={handleForgot}
+                        disabled={loading}
+                        style={{
+                          background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                          color: C.textSecondary, fontFamily: FONT, fontSize: 12.5, fontWeight: 600,
+                        }}
+                      >
+                        Forgot password?
+                      </button>
+                    </div>
                   )}
                 </label>
+
+                {/* Consent is captured, not assumed: the privacy policy asserts
+                    the user agreed to it, so there must be an affirmative act.
+                    The server re-checks this — the checkbox alone isn't evidence. */}
+                {isSignup && (
+                  <label style={{
+                    display: 'flex', alignItems: 'flex-start', gap: 9, marginBottom: 18,
+                    fontSize: 12.5, color: C.textSecondary, lineHeight: 1.5, cursor: 'pointer',
+                  }}>
+                    <input
+                      type="checkbox"
+                      checked={agreed}
+                      onChange={e => setAgreed(e.target.checked)}
+                      style={{ marginTop: 2, width: 15, height: 15, accentColor: accent, cursor: 'pointer', flexShrink: 0 }}
+                    />
+                    <span>
+                      I agree to the{' '}
+                      <a href="/terms-and-conditions" target="_blank" rel="noreferrer"
+                        style={{ color: accent, fontWeight: 600 }}>Terms of Service</a>
+                      {' '}and{' '}
+                      <a href="/privacy-policy" target="_blank" rel="noreferrer"
+                        style={{ color: accent, fontWeight: 600 }}>Privacy Policy</a>.
+                    </span>
+                  </label>
+                )}
+
+                {notice && !isSignup && (
+                  <div style={{
+                    background: C.surfaceAlt, color: C.textSecondary, borderRadius: 8,
+                    padding: '10px 14px', fontSize: 12.5, marginBottom: 16, lineHeight: 1.5,
+                  }}>{notice}</div>
+                )}
 
                 {error && (
                   <div role="alert" style={{
@@ -414,9 +480,17 @@ export default function LoginGate({ onLogin, onBack, initialMode = 'signin' }) {
                     {fbLoading ? 'Connecting…' : (isSignup ? 'Continue with Facebook' : 'Sign in with Facebook')}
                   </button>
                   <p style={{ fontSize: 11.5, color: C.textMuted, marginTop: 10, textAlign: 'center', lineHeight: 1.5 }}>
-                    {isSignup
-                      ? 'We’ll create your workspace from your Facebook account — no password to remember.'
-                      : 'New here? Facebook works for signing up too.'}
+                    {isSignup ? (
+                      // The Facebook button creates an account, so consent must be
+                      // disclosed here too — there's no checkbox in that path.
+                      <>
+                        We’ll create your workspace from your Facebook account. By continuing you agree
+                        to our{' '}
+                        <a href="/terms-and-conditions" target="_blank" rel="noreferrer" style={{ color: accent, fontWeight: 600 }}>Terms</a>
+                        {' '}and{' '}
+                        <a href="/privacy-policy" target="_blank" rel="noreferrer" style={{ color: accent, fontWeight: 600 }}>Privacy Policy</a>.
+                      </>
+                    ) : 'New here? Facebook works for signing up too.'}
                   </p>
                 </>
               )}

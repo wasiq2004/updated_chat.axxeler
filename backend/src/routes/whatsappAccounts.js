@@ -213,7 +213,22 @@ router.post('/whatsapp-accounts/embedded-signup', adminOnly, async (req, res) =>
       console.warn('[whatsapp-accounts] subscribed_apps failed (continuing):', sub.error);
     }
 
-    // 4. Persist the connected account (mirrors the manual create INSERT).
+    // 4. Register the number with the Cloud API — Meta's REQUIRED final step of
+    //    Embedded Signup. Skip it and the number is connected but cannot send a
+    //    single message.
+    //
+    //    Best-effort on purpose: a registration failure must not throw away a
+    //    working token + connection. We record the outcome instead and surface it,
+    //    so the UI can say "connected, but not sendable yet" rather than lying.
+    //    The most common failure is 133005 — the number already carries a
+    //    two-step PIN from a previous setup that we cannot know.
+    const pin = facebookAuth.generateTwoStepPin();
+    const reg = await facebookAuth.registerPhoneNumber(String(phoneNumberId).trim(), accessToken, pin);
+    if (!reg.ok) {
+      console.warn(`[whatsapp-accounts] /register failed (continuing): ${reg.error} (code ${reg.code ?? '—'})`);
+    }
+
+    // 5. Persist the connected account (mirrors the manual create INSERT).
     const client = await pool.connect();
     let created;
     try {
@@ -222,17 +237,22 @@ router.post('/whatsapp-accounts/embedded-signup', adminOnly, async (req, res) =>
         `INSERT INTO coexistence.whatsapp_accounts
           (display_name, display_phone_number, phone_number_id, waba_id, meta_app_id,
            access_token_encrypted, verify_token_encrypted, is_default, is_active,
-           connection_method, tenant_id, organization_id)
+           connection_method, tenant_id, organization_id,
+           two_step_pin_encrypted, registered_at)
          VALUES ($1,$2,$3,$4,$5,$6,$7,
            (SELECT NOT EXISTS (SELECT 1 FROM coexistence.whatsapp_accounts
                                 WHERE tenant_id IS NOT DISTINCT FROM $8)),
-           TRUE, 'embedded_signup', $8, $9)
+           TRUE, 'embedded_signup', $8, $9, $10, $11)
          RETURNING *`,
         [
           displayName, displayPhoneNumber, String(phoneNumberId).trim(), String(wabaId).trim(),
           metaAppId?.trim() || facebookAuth.getPublicConfig().appId || null,
           encrypt(accessToken), encrypt(''),
           req.tenantId ?? null, req.organizationId ?? null,
+          // Only store the PIN if Meta actually accepted it. Storing one it
+          // rejected would be a lie we'd later act on during re-registration.
+          reg.ok ? encrypt(pin) : null,
+          reg.ok ? new Date() : null,
         ]
       );
       await client.query('COMMIT');
@@ -244,7 +264,7 @@ router.post('/whatsapp-accounts/embedded-signup', adminOnly, async (req, res) =>
       client.release();
     }
 
-    // 5. Link the person's Facebook identity to their account so "Sign in with
+    // 6. Link the person's Facebook identity to their account so "Sign in with
     //    Facebook" works next time. Prefer a server-verified id (from a user
     //    token); fall back to the client-asserted id. Best-effort — a linking
     //    failure (e.g. the id already belongs to another account) must not fail
@@ -273,7 +293,16 @@ router.post('/whatsapp-accounts/embedded-signup', adminOnly, async (req, res) =>
       }
     }
 
-    res.status(201).json({ ...publicShape(created, { includeSecrets: true }), fbLinked: !!linkedFbUserId });
+    res.status(201).json({
+      ...publicShape(created, { includeSecrets: true }),
+      fbLinked: !!linkedFbUserId,
+      // The account row exists either way, so the client must be told whether the
+      // number can actually SEND — otherwise the first broadcast fails with a
+      // baffling Meta error and nobody connects it back to this step.
+      registered: !!reg.ok,
+      registrationError: reg.ok ? null : (reg.error || 'Registration failed'),
+      registrationCode: reg.ok ? null : (reg.code ?? null),
+    });
   } catch (err) {
     if (err.code === '23505') return res.status(409).json({ error: 'This Phone Number ID is already connected' });
     console.error('[whatsapp-accounts] embedded-signup error:', err.message);

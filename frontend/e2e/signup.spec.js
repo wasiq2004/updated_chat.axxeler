@@ -56,6 +56,7 @@ test('signup posts the right body and shows the check-your-inbox screen', async 
   await page.getByPlaceholder('Acme Pvt Ltd').fill('Acme Pvt Ltd');
   await page.getByPlaceholder('you@company.com').fill('priya@acme.com');
   await page.getByPlaceholder('••••••••').fill('supersecret1');
+  await page.getByRole('checkbox').check();
   await page.getByRole('button', { name: 'Create account' }).click();
 
   await expect(page.getByRole('heading', { name: 'Check your inbox' })).toBeVisible();
@@ -66,7 +67,29 @@ test('signup posts the right body and shows the check-your-inbox screen', async 
     displayName: 'Priya Sharma',
     companyName: 'Acme Pvt Ltd',
     partnerSlug: null,
+    acceptedTerms: true,
   });
+});
+
+test('signup is refused until the terms are accepted', async ({ page }) => {
+  await mockPublic(page);
+  let called = false;
+  await page.route('**/api/auth/signup', r => { called = true; r.fulfill({ status: 201, json: {} }); });
+  await page.goto('/#/signup');
+  await page.getByPlaceholder('you@company.com').fill('a@b.com');
+  await page.getByPlaceholder('••••••••').fill('supersecret1');
+  await page.getByRole('button', { name: 'Create account' }).click();
+  await expect(page.getByRole('alert')).toContainText(/Terms/i);
+  // Our privacy policy claims the user agreed to it, so we must not create an
+  // account without evidence they did.
+  expect(called).toBe(false);
+});
+
+test('the signup consent links point at the real legal pages', async ({ page }) => {
+  await mockPublic(page);
+  await page.goto('/#/signup');
+  await expect(page.getByRole('link', { name: 'Terms of Service' })).toHaveAttribute('href', '/terms-and-conditions');
+  await expect(page.getByRole('link', { name: 'Privacy Policy' })).toHaveAttribute('href', '/privacy-policy');
 });
 
 test('signup under a partner slug sends the slug AND shows partner branding', async ({ page }) => {
@@ -89,6 +112,7 @@ test('signup under a partner slug sends the slug AND shows partner branding', as
   await page.getByRole('tab', { name: 'Create account' }).click();
   await page.getByPlaceholder('you@company.com').fill('new@customer.com');
   await page.getByPlaceholder('••••••••').fill('supersecret1');
+  await page.getByRole('checkbox').check();
   await page.getByRole('button', { name: 'Create account' }).click();
 
   await expect(page.getByRole('heading', { name: 'Check your inbox' })).toBeVisible();
@@ -117,6 +141,7 @@ test('server-side signup errors surface to the user', async ({ page }) => {
   await page.goto(`/#/signup`);
   await page.getByPlaceholder('you@company.com').fill('taken@acme.com');
   await page.getByPlaceholder('••••••••').fill('supersecret1');
+  await page.getByRole('checkbox').check();
   await page.getByRole('button', { name: 'Create account' }).click();
   await expect(page.getByRole('alert')).toContainText('already exists');
 });

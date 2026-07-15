@@ -48,6 +48,21 @@ export const api = {
       req('/auth/verify-email', { method: 'POST', body: JSON.stringify({ token }) }),
     resendVerification: (email) =>
       req('/auth/resend-verification', { method: 'POST', body: JSON.stringify({ email }) }),
+    // Self-serve recovery. forgotPassword resolves { ok:false, code:'NO_MAILER' }
+    // on a server with no SMTP — it never throws for that.
+    forgotPassword: (email) =>
+      req('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email }) }),
+    resetPassword: (token, password) =>
+      req('/auth/reset-password', { method: 'POST', body: JSON.stringify({ token, password }) }),
+    // Authenticated. currentPassword is not required when the account has no
+    // usable password yet (a Facebook signup).
+    setPassword: (newPassword, currentPassword) =>
+      req('/auth/set-password', { method: 'POST', body: JSON.stringify({ newPassword, currentPassword }) }),
+    // Link/unlink a Facebook identity to the SIGNED-IN account. This is what makes
+    // "Sign in with Facebook" work for someone who signed up with a password.
+    linkFacebook: (accessToken) =>
+      req('/auth/link-facebook', { method: 'POST', body: JSON.stringify({ accessToken }) }),
+    unlinkFacebook: () => req('/auth/unlink-facebook', { method: 'POST' }),
     // "Sign in with Facebook". Signs in a linked user, and creates a workspace
     // for a Facebook identity we've never seen.
     facebook: (accessToken, extra = {}) =>
@@ -428,7 +443,9 @@ export const api = {
     stats: () => req('/platform/stats'),
     // Dashboard time-series + adoption metrics. days: 7–90 (server clamps).
     analytics: (days = 30) => req(`/platform/analytics?days=${encodeURIComponent(days)}`),
-    tenants: () => req('/platform/tenants'),
+    // deleted:true lists the recycle bin (soft-deleted admins) instead.
+    tenants: (opts = {}) => req(`/platform/tenants${opts.deleted ? '?deleted=1' : ''}`),
+    restoreTenant: (id) => req(`/platform/tenants/${id}/restore`, { method: 'POST' }),
     tenant: (id) => req(`/platform/tenants/${id}`),
     createTenant: (data) => req('/platform/tenants', { method: 'POST', body: JSON.stringify(data) }),
     updateTenant: (id, data) => req(`/platform/tenants/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
@@ -463,7 +480,9 @@ export const api = {
     // Plan requests: customers asking to buy a plan. Approving one activates the
     // subscription (payment is collected out of band — there is no gateway).
     planRequests: (status = 'pending') => req(`/platform/plan-requests?status=${encodeURIComponent(status)}`),
-    approvePlanRequest: (id) => req(`/platform/plan-requests/${id}/approve`, { method: 'POST' }),
+    // force:true overrides the over-limit guard on a downgrade (409 OVER_LIMIT).
+    approvePlanRequest: (id, force = false) =>
+      req(`/platform/plan-requests/${id}/approve`, { method: 'POST', body: JSON.stringify({ force }) }),
     rejectPlanRequest: (id, note) =>
       req(`/platform/plan-requests/${id}/reject`, { method: 'POST', body: JSON.stringify({ note }) }),
     impersonate: (targetUserId, reason) =>

@@ -25,7 +25,7 @@ import { ChartCard, LineChart, BarChart, StatTile } from '../components/superadm
 
 // Nav depends on the operator: the platform owner manages Partners (resellers);
 // a white-label reseller manages their own Branding and can never see Partners.
-function navGroupsFor(user) {
+function navGroupsFor(user, { pendingCount = 0 } = {}) {
   const groups = [
     // Not "Platform" — the rail header above already says PLATFORM / Super Admin.
     { title: 'Overview', items: [{ key: 'overview', label: 'Dashboard', Icon: LayoutDashboard }] },
@@ -38,7 +38,7 @@ function navGroupsFor(user) {
     {
       title: 'Billing', items: [
         { key: 'plans', label: 'Plans', Icon: CreditCard },
-        { key: 'requests', label: 'Plan Requests', Icon: Receipt },
+        { key: 'requests', label: 'Plan Requests', Icon: Receipt, badge: pendingCount || null },
       ],
     },
     {
@@ -97,7 +97,12 @@ function StatusPill({ status }) {
 export default function SuperAdminPage({ user }) {
   const [tab, setTab] = useState('overview');
   const [collapsed, setCollapsed] = useState(false);
-  const GROUPS = navGroupsFor(user);
+  // Pending plan requests are money waiting to be collected. Without a count on
+  // the rail nobody knows to look, and a customer sits on "Upgrade requested"
+  // indefinitely — the whole purchase flow is manual, so this IS the alert.
+  const { data: pendingReqs } = useAsync(() => api.platform.planRequests('pending'), []);
+  const pendingCount = Array.isArray(pendingReqs) ? pendingReqs.length : 0;
+  const GROUPS = navGroupsFor(user, { pendingCount });
   const isReseller = !!user?.isResellerAdmin;
   // Only the platform owner can impersonate (the impersonation route is
   // super-admin-only); resellers manage but don't impersonate.
@@ -197,10 +202,32 @@ function ConsoleSidebar({ groups, active, onSelect, collapsed, setCollapsed, isR
                   onMouseEnter={e => { if (!on) { e.currentTarget.style.background = 'var(--c-hover)'; e.currentTarget.style.transform = 'translateX(2px)'; } }}
                   onMouseLeave={e => { e.currentTarget.style.background = on ? 'var(--c-primaryGradient, linear-gradient(135deg,#0FA8E0,#38CDF0))' : 'transparent'; e.currentTarget.style.transform = 'none'; }}
                 >
-                  <span style={{ width: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, opacity: on ? 1 : 0.72 }}>
+                  <span style={{ width: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, opacity: on ? 1 : 0.72, position: 'relative' }}>
                     <item.Icon size={16} strokeWidth={on ? 2.4 : 2} />
+                    {/* Collapsed rail has no room for the count — a dot still says
+                        "something is waiting here", which is the whole job. */}
+                    {collapsed && item.badge ? (
+                      <span aria-hidden="true" style={{
+                        position: 'absolute', top: -3, right: -3, width: 7, height: 7,
+                        borderRadius: '50%', background: on ? '#fff' : C.amber,
+                      }} />
+                    ) : null}
                   </span>
                   {!collapsed && <span style={{ flex: 1, letterSpacing: '-0.01em', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.label}</span>}
+                  {!collapsed && item.badge ? (
+                    <span
+                      // The count is announced, not just coloured: a badge that
+                      // only reads as a number is meaningless out of context.
+                      aria-label={`${item.badge} pending`}
+                      style={{
+                        flexShrink: 0, minWidth: 18, height: 18, padding: '0 5px', borderRadius: 9,
+                        background: on ? 'rgba(255,255,255,.25)' : C.amber,
+                        color: on ? '#fff' : '#3b2600',
+                        fontSize: 10.5, fontWeight: 800, lineHeight: '18px', textAlign: 'center',
+                        fontVariantNumeric: 'tabular-nums',
+                      }}
+                    >{item.badge > 99 ? '99+' : item.badge}</span>
+                  ) : null}
                 </button>
               );
             })}
@@ -767,11 +794,17 @@ function StateRow({ icon, color, label, value }) {
 
 // ─── Admins (tenants) ────────────────────────────────────────────────────────
 function Admins({ isSuper }) {
-  const { data, error, loading, reload } = useAsync(() => api.platform.tenants(), []);
+  // The recycle bin. Soft delete is only honest if the product can undo it —
+  // otherwise "recoverable" means "recoverable by writing SQL against prod".
+  const [showDeleted, setShowDeleted] = useState(false);
+  const { data, error, loading, reload } = useAsync(
+    () => api.platform.tenants({ deleted: showDeleted }), [showDeleted]);
   const { data: plans } = useAsync(() => api.platform.plans(), []);
   const [showCreate, setShowCreate] = useState(false);
   const [detailFor, setDetailFor] = useState(null); // tenant id open in the drill-down
   const [pendingDelete, setPendingDelete] = useState(null);
+  const [restoring, setRestoring] = useState(0);
+  const [restoreNote, setRestoreNote] = useState('');
 
   // `loading && !data` (not bare `loading`): a reload after a delete must not
   // unmount the table and any dialog mounted beside it.
@@ -780,12 +813,31 @@ function Admins({ isSuper }) {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, gap: 12, flexWrap: 'wrap' }}>
         <div style={{ fontSize: 13, color: C.textSecondary }}>
-          Each admin is a workspace with its own login, organizations and users.
+          {showDeleted
+            ? 'Deleted workspaces. Their data was kept — restoring re-enables the logins.'
+            : 'Each admin is a workspace with its own login, organizations and users.'}
         </div>
-        <button style={btnPrimary} onClick={() => setShowCreate(true)}>+ New admin</button>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <button
+            type="button"
+            aria-pressed={showDeleted}
+            style={{ ...btn, ...(showDeleted ? { background: C.surfaceAlt, fontWeight: 700 } : {}) }}
+            onClick={() => { setRestoreNote(''); setShowDeleted(v => !v); }}
+          >
+            {showDeleted ? '← Active admins' : 'Recently deleted'}
+          </button>
+          {!showDeleted && <button style={btnPrimary} onClick={() => setShowCreate(true)}>+ New admin</button>}
+        </div>
       </div>
+
+      {restoreNote && (
+        <div style={{
+          marginBottom: 12, padding: '10px 12px', borderRadius: 8, fontSize: 12.5, lineHeight: 1.55,
+          background: 'rgba(17,131,180,.10)', color: C.textSecondary, border: `1px solid ${C.border}`,
+        }}>{restoreNote}</div>
+      )}
       {showCreate && (
         <CreateAdmin plans={plans || []} onClose={() => setShowCreate(false)} onCreated={() => { setShowCreate(false); reload(); }} />
       )}
@@ -800,8 +852,10 @@ function Admins({ isSuper }) {
           </thead>
           <tbody>
             {(data || []).map(t => (
-              <tr key={t.id} style={{ borderTop: `1px solid ${C.border}`, cursor: 'pointer' }}
-                onClick={() => setDetailFor(t.id)}>
+              // A deleted workspace has no drill-down to open — the detail route
+              // filters deleted_at IS NULL, so clicking it would just spin.
+              <tr key={t.id} style={{ borderTop: `1px solid ${C.border}`, cursor: showDeleted ? 'default' : 'pointer' }}
+                onClick={showDeleted ? undefined : () => setDetailFor(t.id)}>
                 <td style={{ padding: '11px 14px', fontWeight: 600 }}>{t.name}</td>
                 <td style={{ padding: '11px 14px', color: C.textSecondary }}>{t.slug}</td>
                 <td style={{ padding: '11px 14px' }}><StatusPill status={t.status} /></td>
@@ -812,24 +866,56 @@ function Admins({ isSuper }) {
                   {/* stopPropagation on both: the whole row opens the drill-down,
                       so without it a delete click also fires that. */}
                   <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-                    <button style={{ ...btn, padding: '5px 10px', fontSize: 12.5 }}
-                      onClick={(e) => { e.stopPropagation(); setDetailFor(t.id); }}>
-                      Manage →
-                    </button>
-                    <button
-                      title="Delete admin"
-                      aria-label={`Delete ${t.name}`}
-                      style={{ ...btn, padding: '5px 9px', color: '#DC2626' }}
-                      onClick={(e) => { e.stopPropagation(); setPendingDelete(t); }}
-                    >
-                      <Trash2 size={14} style={{ verticalAlign: '-2px' }} />
-                    </button>
+                    {showDeleted ? (
+                      <button
+                        style={{ ...btn, padding: '5px 10px', fontSize: 12.5 }}
+                        disabled={restoring === t.id}
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          setRestoring(t.id);
+                          setRestoreNote('');
+                          try {
+                            const r = await api.platform.restoreTenant(t.id);
+                            // Conflicts are surfaced, not swallowed: an address
+                            // reused while they were deleted can't be handed back,
+                            // and the operator has to know which one.
+                            setRestoreNote(r.conflicts?.length
+                              ? `Restored “${t.name}” (${r.restoredLogins} login(s)). These addresses are now taken by someone else and stayed disabled: ${r.conflicts.join(', ')}.`
+                              : `Restored “${t.name}” and re-enabled ${r.restoredLogins} login(s).`);
+                            reload();
+                          } catch (err) {
+                            setRestoreNote(err.message || 'Could not restore.');
+                          } finally {
+                            setRestoring(0);
+                          }
+                        }}
+                      >
+                        {restoring === t.id ? 'Restoring…' : 'Restore'}
+                      </button>
+                    ) : (
+                      <>
+                        <button style={{ ...btn, padding: '5px 10px', fontSize: 12.5 }}
+                          onClick={(e) => { e.stopPropagation(); setDetailFor(t.id); }}>
+                          Manage →
+                        </button>
+                        <button
+                          title="Delete admin"
+                          aria-label={`Delete ${t.name}`}
+                          style={{ ...btn, padding: '5px 9px', color: '#DC2626' }}
+                          onClick={(e) => { e.stopPropagation(); setPendingDelete(t); }}
+                        >
+                          <Trash2 size={14} style={{ verticalAlign: '-2px' }} />
+                        </button>
+                      </>
+                    )}
                   </div>
                 </td>
               </tr>
             ))}
             {(data || []).length === 0 && (
-              <tr><td colSpan={7} style={{ padding: 20, textAlign: 'center', color: C.textMuted }}>No admins yet. Create one to get started.</td></tr>
+              <tr><td colSpan={7} style={{ padding: 20, textAlign: 'center', color: C.textMuted }}>
+                {showDeleted ? 'Nothing deleted. ' : 'No admins yet. Create one to get started.'}
+              </td></tr>
             )}
           </tbody>
         </table>
@@ -1337,6 +1423,9 @@ function PlanRequests() {
   const { data, error, loading, reload } = useAsync(() => api.platform.planRequests(status), [status]);
   const [busy, setBusy] = useState(0);
   const [actionErr, setActionErr] = useState('');
+  // A downgrade the tenant already exceeds: the server 409s rather than silently
+  // leaving them over their new cap. Hold it so the operator can confirm.
+  const [overLimit, setOverLimit] = useState(null);
 
   const act = async (id, fn) => {
     setActionErr('');
@@ -1346,6 +1435,20 @@ function PlanRequests() {
       reload();
     } catch (e) {
       setActionErr(e.message || 'Action failed.');
+    } finally {
+      setBusy(0);
+    }
+  };
+
+  const approve = async (r) => {
+    setActionErr('');
+    setBusy(r.id);
+    try {
+      await api.platform.approvePlanRequest(r.id);
+      reload();
+    } catch (e) {
+      if (/already exceeds/i.test(e.message || '')) { setOverLimit({ request: r, message: e.message }); }
+      else setActionErr(e.message || 'Action failed.');
     } finally {
       setBusy(0);
     }
@@ -1409,21 +1512,31 @@ function PlanRequests() {
 
               <div style={{ textAlign: 'right', minWidth: 110 }}>
                 <div style={{ fontSize: 17, fontWeight: 800, fontVariantNumeric: 'tabular-nums' }}>
+                  {/* The price AGREED at request time, not today's catalog price —
+                      that's what the customer was quoted and what you collect. */}
                   {fmtMoney(
-                    Number(r.billingCycle === 'yearly' ? r.plan.priceYearly : r.plan.priceMonthly),
-                    r.plan.currency
+                    Number(r.priceAgreed ?? (r.billingCycle === 'yearly' ? r.plan.priceYearly : r.plan.priceMonthly)),
+                    r.currencyAgreed || r.plan.currency
                   )}
                 </div>
                 <div style={{ fontSize: 11, color: C.textMuted, fontWeight: 600 }}>
                   {r.billingCycle === 'yearly' ? 'per year' : 'per month'}
                 </div>
+                {r.priceChanged && (
+                  <div style={{ fontSize: 10.5, color: '#B45309', fontWeight: 700, marginTop: 3 }}>
+                    Plan now {fmtMoney(
+                      Number(r.billingCycle === 'yearly' ? r.plan.priceYearly : r.plan.priceMonthly),
+                      r.plan.currency
+                    )}
+                  </div>
+                )}
               </div>
 
               {r.status === 'pending' ? (
                 <div style={{ display: 'flex', gap: 8 }}>
                   <button
                     type="button" disabled={busy === r.id}
-                    onClick={() => act(r.id, () => api.platform.approvePlanRequest(r.id))}
+                    onClick={() => approve(r)}
                     style={{ ...btnPrimary, display: 'inline-flex', alignItems: 'center', gap: 6, opacity: busy === r.id ? 0.6 : 1 }}
                   >
                     <Check size={14} /> {busy === r.id ? 'Working…' : 'Approve & activate'}
@@ -1444,6 +1557,34 @@ function PlanRequests() {
             </div>
           ))}
         </div>
+      )}
+
+      {overLimit && (
+        <Modal onClose={() => setOverLimit(null)} title="This is a downgrade they don’t fit">
+          <div style={{ fontSize: 13, color: C.textSecondary, lineHeight: 1.6 }}>
+            {overLimit.message}
+          </div>
+          <div style={{
+            marginTop: 12, padding: '10px 12px', borderRadius: 8, fontSize: 12.5, lineHeight: 1.55,
+            background: 'rgba(245,158,11,.12)', color: '#B45309', border: '1px solid rgba(245,158,11,.3)',
+          }}>
+            Limits are only checked when something is <b>created</b>. Nothing is deleted or
+            deactivated — they simply stay over the cap until they remove things themselves.
+          </div>
+          <div style={{ marginTop: 16, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <button style={btn} onClick={() => setOverLimit(null)}>Cancel</button>
+            <button
+              style={{ ...btnPrimary, background: C.amber, color: '#3b2600' }}
+              onClick={async () => {
+                const id = overLimit.request.id;
+                setOverLimit(null);
+                await act(id, () => api.platform.approvePlanRequest(id, true));
+              }}
+            >
+              Approve anyway
+            </button>
+          </div>
+        </Modal>
       )}
     </>
   );

@@ -27,6 +27,8 @@ import BrandingPage from './pages/BrandingPage.jsx';
 import AuditPage from './pages/AuditPage.jsx';
 import UpgradeGate from './components/UpgradeGate.jsx';
 import RenewGate from './components/RenewGate.jsx';
+import ResetPasswordGate from './components/ResetPasswordGate.jsx';
+import AccountSecurityModal from './components/AccountSecurityModal.jsx';
 import ConnectWhatsAppModal from './components/ConnectWhatsAppModal.jsx';
 import { canAccessPage } from './lib/plans.js';
 import { getFacebookConfig } from './lib/facebook.js';
@@ -78,6 +80,11 @@ export default function App() {
     try { return new URLSearchParams(window.location.search).get('verify'); } catch { return null; }
   });
   const [verifyState, setVerifyState] = useState(null); // null | 'working' | 'failed'
+  // ?reset=<token> — the link from the forgot-password email. Read once at mount
+  // and held in state; the token is stripped from the URL as soon as it's used.
+  const [resetToken, setResetToken] = useState(() => {
+    try { return new URLSearchParams(window.location.search).get('reset'); } catch { return null; }
+  });
   const [routeParts, navigate, replaceRoute] = useHashRoute();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   // Light/dark theme. Initialized from the data-theme the no-flash boot script in
@@ -114,6 +121,7 @@ export default function App() {
   // Post-login nudge: a tenant admin who hasn't connected a WhatsApp number yet
   // is invited to connect it via Facebook (Embedded Signup). Only when a Meta app
   // is configured, and only once per browser session (not on every reload).
+  const [showAccount, setShowAccount] = useState(false);
   const [showConnectWa, setShowConnectWa] = useState(false);
   useEffect(() => {
     if (!user || user.role !== 'admin' || isConsoleUser) { setShowConnectWa(false); return; }
@@ -222,12 +230,12 @@ export default function App() {
   };
 
   useEffect(() => {
-    // Arriving on a ?verify= link: the confirmation effect below owns the
-    // session. Skipping the normal check here is not an optimisation — both run
+    // Arriving on a ?verify= or ?reset= link: those flows own the session.
+    // Skipping the normal check here is not an optimisation — both run
     // concurrently, and there is no cookie yet, so /auth/me 401s and its
     // `.catch(() => setUser(null))` would race the verified user right back out
     // and dump a just-confirmed person on the login screen.
-    if (verifyToken) { setChecking(false); return; }
+    if (verifyToken || resetToken) { setChecking(false); return; }
     // First check whether the instance needs first-run setup (no users yet).
     // If so, show the setup wizard; otherwise resume the normal session check.
     api.auth.status()
@@ -340,6 +348,30 @@ export default function App() {
     return <SetupWizard onComplete={(u) => { setSetupRequired(false); setUser(u); }} />;
   }
 
+  // ?reset=<token> — choose a new password, then straight into the app.
+  if (!user && resetToken) {
+    return (
+      <ResetPasswordGate
+        token={resetToken}
+        onDone={(u) => {
+          setResetToken(null);
+          try {
+            const url = new URL(window.location.href);
+            url.searchParams.delete('reset');
+            window.history.replaceState({}, '', url.toString());
+          } catch { /* ignore */ }
+          setUser(u);
+          navigate('home');
+        }}
+        onExpired={() => {
+          setResetToken(null);
+          setAuthMode('signin');
+          setShowLogin(true);
+        }}
+      />
+    );
+  }
+
   if (!user) {
     // Logged-out visitors land on the marketing page first; "Start Free" / "Log
     // in" take them to the login screen, which can come back via "Back to home".
@@ -438,6 +470,7 @@ export default function App() {
         user={user}
         onLogout={handleLogout}
         onNavigate={setPage}
+        onOpenAccount={() => setShowAccount(true)}
         orgs={orgs}
         activeOrg={activeOrg}
         onOrgChange={changeOrg}
@@ -470,6 +503,16 @@ export default function App() {
         <ConnectWhatsAppModal
           onClose={dismissConnectWa}
           onConnected={dismissConnectWa}
+        />
+      )}
+      {showAccount && (
+        <AccountSecurityModal
+          user={user}
+          onClose={() => setShowAccount(false)}
+          // Re-read the session so passwordSet / facebookLinked reflect what just
+          // changed — the modal renders "set" vs "change" off those, and would
+          // otherwise keep showing the stale state until the next reload.
+          onChanged={() => api.auth.me().then(({ user: u }) => setUser(u)).catch(() => {})}
         />
       )}
     </div>

@@ -68,6 +68,16 @@ function periodEndExpr(billingCycle) {
     : `NOW() + INTERVAL '1 month'`;
 }
 
+// SQL fragment: the period end for a plan, given a placeholder holding its id.
+// A FREE plan gets NULL — "never expires", the convention the sweeper and the
+// bootstrap tenant already use. Without this a zero-price plan goes past_due one
+// cycle after it is assigned and the tenant loses all access, which is nonsense
+// for a plan nobody is billed for.
+function planAwarePeriodEndExpr(billingCycle, planIdParam) {
+  return `(SELECT CASE WHEN p.price_monthly = 0 THEN NULL ELSE ${periodEndExpr(billingCycle)} END
+             FROM coexistence.plans p WHERE p.id = ${planIdParam})`;
+}
+
 // ─── Platform stats ─────────────────────────────────────────────────────────
 router.get('/platform/stats', async (req, res) => {
   try {
@@ -254,7 +264,11 @@ router.get('/platform/analytics', async (req, res) => {
 });
 
 // ─── Tenants ────────────────────────────────────────────────────────────────
+// GET /platform/tenants?deleted=1 — the recycle bin. Without a way to SEE
+// soft-deleted admins there is no way to reach the restore route, which would
+// make "recoverable" true only in the database and false in the product.
 router.get('/platform/tenants', async (req, res) => {
+  const showDeleted = req.query.deleted === '1' || req.query.deleted === 'true';
   try {
     const { rows } = await pool.query(`
       SELECT t.id, t.name, t.slug, t.status, t.created_at, t.trial_ends_at,
@@ -267,11 +281,13 @@ router.get('/platform/tenants', async (req, res) => {
              (SELECT u.signup_source FROM coexistence.z_chat_users u
                WHERE u.tenant_id = t.id ORDER BY u.id ASC LIMIT 1) AS signup_source,
              (SELECT COUNT(*)::int FROM coexistence.plan_requests pr
-               WHERE pr.tenant_id = t.id AND pr.status = 'pending') AS pending_plan_requests
+               WHERE pr.tenant_id = t.id AND pr.status = 'pending') AS pending_plan_requests,
+             t.deleted_at
         FROM coexistence.tenants t
         LEFT JOIN coexistence.plans p ON p.id = t.plan_id
-       WHERE t.deleted_at IS NULL AND t.reseller_id IS NOT DISTINCT FROM $1
-       ORDER BY t.created_at DESC
+       WHERE t.deleted_at IS ${showDeleted ? 'NOT NULL' : 'NULL'}
+         AND t.reseller_id IS NOT DISTINCT FROM $1
+       ORDER BY ${showDeleted ? 't.deleted_at' : 't.created_at'} DESC
     `, [scopeId(req)]);
     res.json(rows);
   } catch (err) {
@@ -425,7 +441,7 @@ router.post('/platform/tenants', async (req, res) => {
     await client.query(
       `INSERT INTO coexistence.subscriptions
          (tenant_id, plan_id, status, billing_cycle, current_period_start, current_period_end)
-       VALUES ($1, $2, 'active', $3, NOW(), ${periodEndExpr(cycle)})`,
+       VALUES ($1, $2, 'active', $3, NOW(), ${planAwarePeriodEndExpr(cycle, '$2')})`,
       [tenant.id, planId, cycle]
     );
 
@@ -551,6 +567,12 @@ router.delete('/platform/tenants/:id', async (req, res) => {
     // kept (audit rows and created_by point at it), but a deleted workspace must
     // not hold an address hostage — otherwise that person can never sign up
     // again with their own email, which self-serve signup makes very likely.
+    // The guard matches the tombstone THIS row would carry ('...+deleted<id>'),
+    // not a bare '%+deleted%'. A substring check cannot tell "already tombstoned
+    // by us" from "the address legitimately contains that text" — and
+    // me+deleted@gmail.com is a valid Gmail plus-address. Such a user was skipped
+    // entirely: left is_active = TRUE, able to sign in to a deleted workspace.
+    // Anchoring on the row's own id makes it exact and still idempotent.
     const { rowCount: disabled } = await client.query(
       `UPDATE coexistence.z_chat_users
           SET is_active = FALSE,
@@ -558,7 +580,7 @@ router.delete('/platform/tenants/:id', async (req, res) => {
               username  = username || '+deleted' || id,
               updated_at = NOW()
         WHERE tenant_id = $1
-          AND email NOT LIKE '%+deleted%'`,
+          AND email NOT LIKE ('%+deleted' || id::text)`,
       [req.params.id]
     );
     await client.query('COMMIT');
@@ -573,6 +595,78 @@ router.delete('/platform/tenants/:id', async (req, res) => {
     try { await client.query('ROLLBACK'); } catch { /* ignore */ }
     console.error('[platform] delete tenant error:', err.message);
     res.status(500).json({ error: 'Failed to delete admin' });
+  } finally {
+    client.release();
+  }
+});
+
+// POST /platform/tenants/:id/restore — undo a soft delete.
+//
+// Both delete routes justify soft-deleting on the grounds that the rows stay
+// "recoverable" — but the recovery was never built, so an accidental delete
+// meant hand-written SQL against production. This is that missing half.
+//
+// Logins are re-enabled by stripping the '+deleted<id>' tombstone we appended.
+// A user whose address was taken over by someone else in the meantime keeps the
+// tombstone (the UPDATE would violate the unique index): reported, not silently
+// skipped, so the operator knows exactly who still needs attention.
+router.post('/platform/tenants/:id/restore', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { rows: found } = await client.query(
+      `SELECT id, name FROM coexistence.tenants
+        WHERE id = $1 AND deleted_at IS NOT NULL AND reseller_id IS NOT DISTINCT FROM $2`,
+      [req.params.id, scopeId(req)]
+    );
+    if (!found.length) return res.status(404).json({ error: 'No deleted admin with that id' });
+
+    await client.query('BEGIN');
+    await client.query(
+      `UPDATE coexistence.tenants
+          SET deleted_at = NULL, status = 'active', updated_at = NOW()
+        WHERE id = $1`,
+      [req.params.id]
+    );
+    const { rows: users } = await client.query(
+      `SELECT id, email, username FROM coexistence.z_chat_users
+        WHERE tenant_id = $1 AND email LIKE ('%+deleted' || id::text)`,
+      [req.params.id]
+    );
+    let restored = 0;
+    const conflicts = [];
+    for (const u of users) {
+      const suffix = `+deleted${u.id}`;
+      const email = u.email.slice(0, -suffix.length);
+      const username = u.username.endsWith(suffix) ? u.username.slice(0, -suffix.length) : u.username;
+      try {
+        // Savepoint per row: one taken address must not roll back the others.
+        await client.query('SAVEPOINT restore_user');
+        await client.query(
+          `UPDATE coexistence.z_chat_users
+              SET is_active = TRUE, email = $1, username = $2, updated_at = NOW()
+            WHERE id = $3`,
+          [email, username, u.id]
+        );
+        await client.query('RELEASE SAVEPOINT restore_user');
+        restored++;
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT restore_user');
+        if (e.code === '23505') conflicts.push(email);
+        else throw e;
+      }
+    }
+    await client.query('COMMIT');
+
+    await auditLog({
+      actor: req.user, action: 'platform.tenant.restore',
+      targetType: 'tenant', targetId: req.params.id, tenantId: Number(req.params.id),
+      payload: { ip: clientIp(req), name: found[0].name, restoredLogins: restored, conflicts },
+    });
+    res.json({ ok: true, restoredLogins: restored, conflicts });
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch { /* ignore */ }
+    console.error('[platform] restore tenant error:', err.message);
+    res.status(500).json({ error: 'Failed to restore admin' });
   } finally {
     client.release();
   }
@@ -603,7 +697,7 @@ router.post('/platform/tenants/:id/subscription', async (req, res) => {
     const s = await client.query(
       `INSERT INTO coexistence.subscriptions
          (tenant_id, plan_id, status, billing_cycle, current_period_start, current_period_end)
-       VALUES ($1, $2, 'active', $3, NOW(), ${periodEndExpr(cycle)}) RETURNING *`,
+       VALUES ($1, $2, 'active', $3, NOW(), ${planAwarePeriodEndExpr(cycle, '$2')}) RETURNING *`,
       [req.params.id, planId, cycle]
     );
     await client.query(
@@ -643,8 +737,10 @@ router.get('/platform/plan-requests', async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT pr.id, pr.status, pr.billing_cycle, pr.note, pr.created_at, pr.decided_at,
+              pr.price_at_request, pr.currency_at_request,
               t.id AS tenant_id, t.name AS tenant_name, t.slug AS tenant_slug,
               p.key AS plan_key, p.name AS plan_name, p.price_monthly, p.price_yearly, p.currency,
+              p.is_active AS plan_active,
               cur.key AS current_plan_key, cur.name AS current_plan_name,
               u.email AS requested_by_email, u.display_name AS requested_by_name
          FROM coexistence.plan_requests pr
@@ -670,7 +766,15 @@ router.get('/platform/plan-requests', async (req, res) => {
       plan: {
         key: r.plan_key, name: r.plan_name, currency: r.currency,
         priceMonthly: r.price_monthly, priceYearly: r.price_yearly,
+        isActive: r.plan_active,
       },
+      // What the customer actually agreed to. `priceChanged` means the plan has
+      // been repriced since — the operator must know before they collect money,
+      // because the quote and the catalog no longer say the same thing.
+      priceAgreed: r.price_at_request,
+      currencyAgreed: r.currency_at_request || r.currency,
+      priceChanged: r.price_at_request != null
+        && Number(r.price_at_request) !== Number(r.billing_cycle === 'yearly' ? r.price_yearly : r.price_monthly),
       currentPlan: r.current_plan_key ? { key: r.current_plan_key, name: r.current_plan_name } : null,
       requestedBy: r.requested_by_email ? { email: r.requested_by_email, name: r.requested_by_name } : null,
     })));
@@ -681,15 +785,23 @@ router.get('/platform/plan-requests', async (req, res) => {
 });
 
 // POST /platform/plan-requests/:id/approve — activate the requested plan.
+// Body: { force } — proceed even when the tenant's current usage exceeds the
+// requested plan's limits (an operator override for a deliberate downgrade).
 router.post('/platform/plan-requests/:id/approve', async (req, res) => {
   const client = await pool.connect();
   try {
     // Re-read under the operator's scope so a partner can't approve a request
-    // belonging to someone else's tenant by guessing an id.
+    // belonging to someone else's tenant by guessing an id. `is_active` is part
+    // of the match: approving onto a retired plan silently bills the tenant
+    // against a plan that no longer appears in any catalog — including their own
+    // comparison grid, where their "current" plan would just be missing.
     const { rows: reqRows } = await client.query(
-      `SELECT pr.id, pr.tenant_id, pr.plan_id, pr.billing_cycle
+      `SELECT pr.id, pr.tenant_id, pr.plan_id, pr.billing_cycle,
+              p.name AS plan_name, p.is_active,
+              p.max_users, p.max_organizations, p.max_contacts
          FROM coexistence.plan_requests pr
          JOIN coexistence.tenants t ON t.id = pr.tenant_id
+         JOIN coexistence.plans   p ON p.id = pr.plan_id
         WHERE pr.id = $1 AND pr.status = 'pending'
           AND t.deleted_at IS NULL
           AND t.reseller_id IS NOT DISTINCT FROM $2`,
@@ -697,11 +809,54 @@ router.post('/platform/plan-requests/:id/approve', async (req, res) => {
     );
     if (!reqRows.length) return res.status(404).json({ error: 'Request not found' });
     const pr = reqRows[0];
+    if (!pr.is_active) {
+      return res.status(409).json({
+        error: `“${pr.plan_name}” is no longer an active plan. Re-activate it, or set this tenant's plan directly.`,
+      });
+    }
     const cycle = pr.billing_cycle === 'yearly' ? 'yearly' : 'monthly';
 
+    // A downgrade can leave the tenant already over the new plan's limits. Limits
+    // are only enforced on CREATE, so nothing would shrink — they'd simply sit
+    // above their cap indefinitely, which is a silent revenue leak and a nasty
+    // surprise the first time someone tries to add a user. Surface it and make
+    // the operator opt in.
+    if (!req.body?.force) {
+      const { rows: usage } = await client.query(
+        `SELECT
+           (SELECT COUNT(*)::int FROM coexistence.z_chat_users WHERE tenant_id = $1)                         AS users,
+           (SELECT COUNT(*)::int FROM coexistence.organizations WHERE tenant_id = $1 AND deleted_at IS NULL) AS organizations,
+           (SELECT COUNT(*)::int FROM coexistence.contacts WHERE tenant_id = $1)                             AS contacts`,
+        [pr.tenant_id]
+      );
+      const u = usage[0] || {};
+      const over = [];
+      // NULL limit = unlimited, so only compare when a cap is actually set.
+      if (pr.max_users != null && u.users > pr.max_users) over.push(`${u.users} users (limit ${pr.max_users})`);
+      if (pr.max_organizations != null && u.organizations > pr.max_organizations) over.push(`${u.organizations} organizations (limit ${pr.max_organizations})`);
+      if (pr.max_contacts != null && u.contacts > pr.max_contacts) over.push(`${u.contacts} contacts (limit ${pr.max_contacts})`);
+      if (over.length) {
+        return res.status(409).json({
+          error: `This tenant already exceeds “${pr.plan_name}”: ${over.join(', ')}. Nothing is removed automatically — approve anyway to proceed.`,
+          code: 'OVER_LIMIT',
+          over,
+        });
+      }
+    }
+
     await client.query('BEGIN');
-    // Same shape as POST /platform/tenants/:id/subscription: retire every live
-    // subscription first, or idx_subscriptions_one_live rejects the insert.
+    // Carry over any unused time BEFORE cancelling: a customer 3 days into a paid
+    // month who upgrades must not forfeit the other 27. This mirrors the
+    // GREATEST(...) invariant that POST /tenants/:id/renew already upholds —
+    // approve used to ignore it and restart the period from NOW().
+    const { rows: prevRows } = await client.query(
+      `SELECT current_period_end FROM coexistence.subscriptions
+        WHERE tenant_id = $1 AND status IN ('active','trialing','past_due')
+        ORDER BY id DESC LIMIT 1`,
+      [pr.tenant_id]
+    );
+    const carryFrom = prevRows[0]?.current_period_end ?? null;
+
     await client.query(
       `UPDATE coexistence.subscriptions SET status = 'cancelled', updated_at = NOW()
         WHERE tenant_id = $1 AND status IN ('active','trialing','past_due','suspended')`,
@@ -710,8 +865,16 @@ router.post('/platform/plan-requests/:id/approve', async (req, res) => {
     await client.query(
       `INSERT INTO coexistence.subscriptions
          (tenant_id, plan_id, status, billing_cycle, current_period_start, current_period_end)
-       VALUES ($1, $2, 'active', $3, NOW(), ${periodEndExpr(cycle)})`,
-      [pr.tenant_id, pr.plan_id, cycle]
+       SELECT $1, $2, 'active', $3, NOW(),
+              CASE
+                -- Free plan: never expires (see the sweeper's NULL convention).
+                WHEN p.price_monthly = 0 THEN NULL
+                -- Paid: one cycle from the later of now or their unused time.
+                ELSE GREATEST(COALESCE($4::timestamptz, NOW()), NOW())
+                     + ${cycle === 'yearly' ? `INTERVAL '1 year'` : `INTERVAL '1 month'`}
+              END
+         FROM coexistence.plans p WHERE p.id = $2`,
+      [pr.tenant_id, pr.plan_id, cycle, carryFrom]
     );
     await client.query(
       `UPDATE coexistence.tenants SET plan_id = $1, status = 'active', updated_at = NOW() WHERE id = $2`,
@@ -1183,6 +1346,8 @@ router.delete('/platform/resellers/:id', requireSuperAdmin, async (req, res) => 
     // hold its address hostage: otherwise re-creating that partner with the same
     // email fails the duplicate check forever, with a confusing 409. The suffix
     // is unique per user id, so repeated deletes can't collide either.
+    // Anchored on the row's own id — see the tenant delete for why a bare
+    // '%+deleted%' guard silently skipped anyone whose real address contains it.
     const { rowCount: disabled } = await client.query(
       `UPDATE coexistence.z_chat_users
           SET is_active = FALSE,
@@ -1190,7 +1355,7 @@ router.delete('/platform/resellers/:id', requireSuperAdmin, async (req, res) => 
               username  = username || '+deleted' || id,
               updated_at = NOW()
         WHERE reseller_id = $1 AND tenant_id IS NULL
-          AND email NOT LIKE '%+deleted%'`,
+          AND email NOT LIKE ('%+deleted' || id::text)`,
       [req.params.id]
     );
     await client.query('COMMIT');

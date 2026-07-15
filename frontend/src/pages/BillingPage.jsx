@@ -78,8 +78,17 @@ export default function BillingPage({ entitlements: initial, user }) {
   useEffect(() => { reloadRequest(); }, [reloadRequest]);
 
   // Only a workspace admin can change the plan — the backend enforces this, so
-  // showing the button to anyone else would just produce a 403.
-  const canBuy = !!ent && !ent.isSuperAdmin && user?.role === 'admin';
+  // showing the button to anyone else just produces an error.
+  //
+  // hasWorkspace, not role alone: a PARTNER console admin is also role='admin'
+  // but has no tenant of their own, so every buy button they saw 400'd with
+  // "No workspace on this account". `!== false` keeps this working against a
+  // backend that predates the field.
+  const canBuy = !!ent
+    && !ent.isSuperAdmin
+    && ent.hasWorkspace !== false
+    && !ent.isResellerAdmin
+    && user?.role === 'admin';
 
   const choosePlan = async (planKey) => {
     setErr('');

@@ -1,10 +1,10 @@
 import { useState, useRef, useEffect } from 'react';
-import { Info, LogOut, Settings, AlertTriangle, CreditCard, ScrollText, Palette, Building2, Sun, Moon } from 'lucide-react';
+import { Info, LogOut, Settings, AlertTriangle, CreditCard, ScrollText, Palette, Building2, Sun, Moon, ShieldCheck } from 'lucide-react';
 import { C, FONT } from '../constants.js';
 import { api } from '../api.js';
 import OrgSwitcher from './OrgSwitcher.jsx';
 
-export default function Topbar({ user, onLogout, onNavigate, orgs, activeOrg, onOrgChange, branding, theme, onToggleTheme }) {
+export default function Topbar({ user, onLogout, onNavigate, onOpenAccount, orgs, activeOrg, onOrgChange, branding, theme, onToggleTheme }) {
   const isAdmin = user?.role === 'admin';
   // Platform owner / white-label reseller: console-only, no operational pages.
   const isConsoleUser = !!(user?.isSuperAdmin || user?.isResellerAdmin);
@@ -162,6 +162,11 @@ export default function Topbar({ user, onLogout, onNavigate, orgs, activeOrg, on
         <div ref={ref} style={{ position: 'relative' }}>
           <button
             onClick={() => setUserOpen(p => !p)}
+            // The button's only content is a single initial, which announces as
+            // the letter "P" and nothing else. Name it, and say what it does.
+            aria-label="Account menu"
+            aria-haspopup="menu"
+            aria-expanded={userOpen}
             style={{
               width: 36,
               height: 36,
@@ -202,6 +207,20 @@ export default function Topbar({ user, onLogout, onNavigate, orgs, activeOrg, on
                 </div>
               </div>
               {[
+                // Account & security sits OUTSIDE the console-user exclusion:
+                // everyone has a password, including super admins and partner
+                // admins, and it's a modal rather than a page so no role guard
+                // can redirect it away.
+                {
+                  label: 'Account & security',
+                  icon: <ShieldCheck size={14} />,
+                  action: () => { setUserOpen(false); onOpenAccount?.(); },
+                  color: C.text,
+                  // A Facebook signup with no password is one lost Facebook
+                  // account away from losing their workspace — flag it here,
+                  // because nothing else in the UI would ever tell them.
+                  dot: user?.passwordSet === false,
+                },
                 // Platform/reseller console users have no operational workspace —
                 // every page below force-redirects them back to the console, so
                 // show only Sign out for them.
@@ -215,7 +234,7 @@ export default function Topbar({ user, onLogout, onNavigate, orgs, activeOrg, on
                   { label: 'Settings', icon: <Settings size={14} />, action: () => { setUserOpen(false); onNavigate('admin-settings'); }, color: C.text },
                 ]),
                 { label: 'Sign out',  icon: <LogOut size={14} />,   action: () => { setUserOpen(false); onLogout(); },                  color: C.primaryHover },
-              ].map(({ label, icon, action, color }) => (
+              ].map(({ label, icon, action, color, dot }) => (
                 <button key={label} onClick={action} style={{
                   width: '100%', display: 'flex', alignItems: 'center', gap: 9,
                   padding: '9px 14px', borderRadius: 7, background: 'transparent',
@@ -226,7 +245,15 @@ export default function Topbar({ user, onLogout, onNavigate, orgs, activeOrg, on
                   onMouseEnter={e => { e.currentTarget.style.background = 'rgba(0,0,0,.06)'; }}
                   onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
                 >
-                  {icon}{label}
+                  {icon}
+                  <span style={{ flex: 1, textAlign: 'left' }}>{label}</span>
+                  {dot && (
+                    // Colour alone would say nothing to a screen reader, and
+                    // "needs attention" is the entire message here.
+                    <span aria-label="Action needed" title="Set a password" style={{
+                      width: 7, height: 7, borderRadius: '50%', background: C.amber, flexShrink: 0,
+                    }} />
+                  )}
                 </button>
               ))}
             </div>

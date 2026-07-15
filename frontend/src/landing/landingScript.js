@@ -109,6 +109,39 @@ export function initLanding(root, { onGetStarted, onNavigate } = {}) {
   });
   paintPrices(); // render from data-* on mount so markup and JS can't drift
 
+  /* ── Live prices ─────────────────────────────────────────────────────────────
+     The data-m / data-y values above are a fallback, not the truth. They were
+     hardcoded, so editing a plan's price in the console changed what customers
+     were charged but NOT what this page advertised — the public quote and the
+     product silently disagreed. Overwrite them from the real catalog, scoped to
+     the partner whose link the visitor arrived on (?w=<slug>).
+
+     Fails silently to the baked-in values: a pricing page that renders stale
+     numbers is bad, but one that renders nothing is worse. */
+  let cancelled = false;
+  cleanups.push(() => { cancelled = true; });
+  (async () => {
+    try {
+      const slug = new URLSearchParams(window.location.search).get('w');
+      const res = await fetch(`/api/public-plans${slug ? `?w=${encodeURIComponent(slug)}` : ''}`, {
+        headers: { Accept: 'application/json' },
+      });
+      if (!res.ok) return;
+      const { plans } = await res.json();
+      if (cancelled || !Array.isArray(plans) || !plans.length) return;
+      const byKey = new Map(plans.map(p => [p.key, p]));
+      $$('.price-amt').forEach(el => {
+        const plan = byKey.get(el.getAttribute('data-plan'));
+        if (!plan) return;
+        el.setAttribute('data-m', String(Number(plan.price_monthly) || 0));
+        // price_yearly is the ANNUAL total; this card shows a per-month figure.
+        const perMonth = Number(plan.price_yearly) > 0 ? Math.round(Number(plan.price_yearly) / 12) : 0;
+        el.setAttribute('data-y', String(perMonth));
+      });
+      paintPrices();
+    } catch { /* keep the fallback prices */ }
+  })();
+
   /* ── CTA wiring ──────────────────────────────────────────────────────────────
      One delegated handler. `href="#"` is used all over this page (logo, socials,
      footer placeholders), so intent is matched on the link text, not the href.
