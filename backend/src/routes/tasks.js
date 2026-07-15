@@ -3,7 +3,10 @@
 
 const { Router } = require('express');
 const pool = require('../db');
-const { isAdmin, scopeClause, auditLog } = require('../middleware/access');
+// isAdmin lives in ../permissions — middleware/access only consumes it, it does
+// not re-export it (importing it from there yields undefined at call time).
+const { isAdmin } = require('../permissions');
+const { scopeClause, auditLog } = require('../middleware/access');
 
 const router = Router();
 

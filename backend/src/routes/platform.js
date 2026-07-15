@@ -957,9 +957,20 @@ router.delete('/platform/resellers/:id', requireSuperAdmin, async (req, res) => 
     );
     // Their console login must stop working the moment the partner is gone —
     // deleted_at on the reseller alone would not block the user's session.
+    //
+    // We also RELEASE the email + username. The row itself is kept (audit rows
+    // and created_by references point at it), but a deleted partner must not
+    // hold its address hostage: otherwise re-creating that partner with the same
+    // email fails the duplicate check forever, with a confusing 409. The suffix
+    // is unique per user id, so repeated deletes can't collide either.
     const { rowCount: disabled } = await client.query(
-      `UPDATE coexistence.z_chat_users SET is_active = FALSE, updated_at = NOW()
-        WHERE reseller_id = $1 AND tenant_id IS NULL`,
+      `UPDATE coexistence.z_chat_users
+          SET is_active = FALSE,
+              email     = email    || '+deleted' || id,
+              username  = username || '+deleted' || id,
+              updated_at = NOW()
+        WHERE reseller_id = $1 AND tenant_id IS NULL
+          AND email NOT LIKE '%+deleted%'`,
       [req.params.id]
     );
     await client.query('COMMIT');
