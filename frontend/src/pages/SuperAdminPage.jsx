@@ -11,22 +11,47 @@
 // Self-contained inline styles to match the app's look.
 
 import { useState, useEffect, useCallback } from 'react';
+import {
+  LayoutDashboard, Users, Building2, CreditCard, Palette, ScrollText,
+  ChevronLeft, ChevronRight, TrendingUp, Bot, Contact,
+  PlugZap, CheckCircle2, AlertTriangle, XCircle, Clock, ShieldAlert,
+} from 'lucide-react';
 import { api } from '../api.js';
 import { C, FONT } from '../constants.js';
+import { VIZ_CSS, STATUS, ordinalStep, compact } from '../lib/vizTokens.js';
+import { ChartCard, LineChart, BarChart, StatTile } from '../components/superadmin/Charts.jsx';
 
-// Tabs depend on the operator: the platform owner manages Partners (resellers);
-// a white-label reseller manages their own Branding.
-function tabsFor(user) {
-  const t = [
-    { key: 'overview', label: 'Overview' },
-    { key: 'admins', label: 'Admins' },
+// Nav depends on the operator: the platform owner manages Partners (resellers);
+// a white-label reseller manages their own Branding and can never see Partners.
+function navGroupsFor(user) {
+  const groups = [
+    // Not "Platform" — the rail header above already says PLATFORM / Super Admin.
+    { title: 'Overview', items: [{ key: 'overview', label: 'Dashboard', Icon: LayoutDashboard }] },
+    {
+      title: 'Customers', items: [
+        { key: 'admins', label: 'Admins', Icon: Users },
+        ...(user?.isSuperAdmin ? [{ key: 'partners', label: 'Partners', Icon: Building2 }] : []),
+      ],
+    },
+    { title: 'Billing', items: [{ key: 'plans', label: 'Plans', Icon: CreditCard }] },
+    {
+      title: 'System', items: [
+        ...(user?.isResellerAdmin ? [{ key: 'branding', label: 'Branding', Icon: Palette }] : []),
+        { key: 'audit', label: 'Audit Log', Icon: ScrollText },
+      ],
+    },
   ];
-  if (user?.isSuperAdmin) t.push({ key: 'partners', label: 'Partners' });
-  t.push({ key: 'plans', label: 'Plans' });
-  if (user?.isResellerAdmin) t.push({ key: 'branding', label: 'Branding' });
-  t.push({ key: 'audit', label: 'Audit Log' });
-  return t;
+  return groups.filter(g => g.items.length > 0);
 }
+
+const SECTION_TITLES = {
+  overview: ['Dashboard', 'Platform health, growth and adoption at a glance.'],
+  admins: ['Admins', 'Every customer account, their organizations, users and plan.'],
+  partners: ['Partners', 'White-label resellers with their own branded login and console.'],
+  plans: ['Plans', 'The plan catalog: pricing, limits and included features.'],
+  branding: ['Branding', 'How your customers see your white-label workspace.'],
+  audit: ['Audit Log', 'Every platform mutation, newest first.'],
+};
 
 const card = {
   background: C.cardBg, border: `1px solid ${C.border}`, borderRadius: 12,
@@ -67,39 +92,136 @@ function StatusPill({ status }) {
 
 export default function SuperAdminPage({ user }) {
   const [tab, setTab] = useState('overview');
-  const TABS = tabsFor(user);
+  const [collapsed, setCollapsed] = useState(false);
+  const GROUPS = navGroupsFor(user);
   const isReseller = !!user?.isResellerAdmin;
   // Only the platform owner can impersonate (the impersonation route is
   // super-admin-only); resellers manage but don't impersonate.
   const isSuper = !!user?.isSuperAdmin;
+  const [title, subtitle] = SECTION_TITLES[tab] || SECTION_TITLES.overview;
+
+  // Guard: if the visible nav no longer contains the active section (e.g. a
+  // reseller landing on 'partners'), fall back to the dashboard.
+  const visible = GROUPS.flatMap(g => g.items.map(i => i.key));
+  useEffect(() => {
+    if (!visible.includes(tab)) setTab('overview');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, user]);
 
   return (
-    <div style={{ padding: '28px 32px', fontFamily: FONT, color: C.text, maxWidth: 1180, margin: '0 auto', width: '100%' }}>
-      <div style={{ marginBottom: 6, fontSize: 12, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: C.primary }}>
-        {isReseller ? 'White-label partner' : 'Platform'}
-      </div>
-      <h1 style={{ fontSize: 26, fontWeight: 800, margin: '0 0 20px', letterSpacing: '-0.02em' }}>
-        {isReseller ? 'Partner Console' : 'Super Admin'}
-      </h1>
+    <div className="viz-root" style={{ display: 'flex', flex: 1, minHeight: 0, fontFamily: FONT, color: C.text }}>
+      <style>{VIZ_CSS}</style>
 
-      <div style={{ display: 'flex', gap: 6, marginBottom: 22, borderBottom: `1px solid ${C.border}` }}>
-        {TABS.map(t => (
-          <button key={t.key} onClick={() => setTab(t.key)} style={{
-            padding: '10px 14px', background: 'none', border: 'none', cursor: 'pointer',
-            fontFamily: FONT, fontSize: 14, fontWeight: 600,
-            color: tab === t.key ? C.primary : C.textSecondary,
-            borderBottom: tab === t.key ? `2px solid ${C.primary}` : '2px solid transparent',
-            marginBottom: -1,
-          }}>{t.label}</button>
+      <ConsoleSidebar
+        groups={GROUPS} active={tab} onSelect={setTab}
+        collapsed={collapsed} setCollapsed={setCollapsed}
+        isReseller={isReseller}
+      />
+
+      <div style={{ flex: 1, minWidth: 0, overflowY: 'auto' }}>
+        <div style={{ padding: '26px 30px 40px', maxWidth: 1240, margin: '0 auto', width: '100%' }}>
+          <h1 style={{ fontSize: 24, fontWeight: 800, margin: 0, letterSpacing: '-0.025em' }}>{title}</h1>
+          <p style={{ fontSize: 13, color: C.textSecondary, margin: '5px 0 22px' }}>{subtitle}</p>
+
+          {tab === 'overview' && <Dashboard />}
+          {tab === 'admins' && <Admins isSuper={isSuper} />}
+          {tab === 'partners' && <Partners />}
+          {tab === 'plans' && <Plans />}
+          {tab === 'branding' && <BrandingTab />}
+          {tab === 'audit' && <Audit />}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Console rail — mirrors the app's main Sidebar language (grouped sections,
+// gradient active state with the amber inset, collapsible).
+function ConsoleSidebar({ groups, active, onSelect, collapsed, setCollapsed, isReseller }) {
+  return (
+    <div style={{
+      width: collapsed ? 68 : 226, flexShrink: 0, display: 'flex', flexDirection: 'column',
+      background: 'linear-gradient(180deg, rgba(0,0,0,.06), rgba(0,0,0,.02)), var(--c-sidebarBg)',
+      borderRight: `1px solid ${C.sidebarBorder}`, overflow: 'hidden',
+      transition: 'width 0.25s cubic-bezier(0.16,1,0.3,1)',
+    }}>
+      <div style={{ padding: collapsed ? '14px 6px 10px' : '16px 14px 12px' }}>
+        {!collapsed ? (
+          <>
+            <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', color: C.primary }}>
+              {isReseller ? 'White-label' : 'Platform'}
+            </div>
+            <div style={{ fontSize: 15, fontWeight: 800, color: C.text, marginTop: 3, letterSpacing: '-0.02em' }}>
+              {isReseller ? 'Partner Console' : 'Super Admin'}
+            </div>
+          </>
+        ) : (
+          <div style={{ display: 'flex', justifyContent: 'center', color: C.primary }}><ShieldAlert size={19} /></div>
+        )}
+      </div>
+
+      <div style={{ padding: collapsed ? '4px 6px' : '4px 10px', flex: 1, overflowY: 'auto' }}>
+        {groups.map((group, gi) => (
+          <div key={group.title} style={{ marginBottom: collapsed ? 4 : 10 }}>
+            {!collapsed ? (
+              <div style={{
+                fontSize: 10, fontWeight: 800, letterSpacing: '.11em', textTransform: 'uppercase',
+                color: C.textMuted, padding: '6px 12px 5px', opacity: 0.8,
+              }}>{group.title}</div>
+            ) : gi > 0 ? (
+              <div style={{ height: 1, background: C.sidebarBorder, margin: '5px 12px' }} />
+            ) : null}
+            {group.items.map(item => {
+              const on = active === item.key;
+              // A real <button>: the section switcher must stay keyboard-reachable
+              // (the tab bar this replaced used buttons).
+              return (
+                <button key={item.key} type="button" onClick={() => onSelect(item.key)}
+                  title={collapsed ? item.label : ''} aria-current={on ? 'page' : undefined}
+                  style={{
+                    width: '100%', textAlign: 'left', border: 'none', fontFamily: FONT,
+                    display: 'flex', alignItems: 'center', gap: collapsed ? 0 : 11,
+                    padding: collapsed ? '11px 0' : '10px 12px', borderRadius: 11, cursor: 'pointer',
+                    marginBottom: 2, justifyContent: collapsed ? 'center' : 'flex-start',
+                    background: on ? 'var(--c-primaryGradient, linear-gradient(135deg,#0FA8E0,#38CDF0))' : 'transparent',
+                    color: on ? '#fff' : C.text, fontSize: 13, fontWeight: on ? 700 : 500,
+                    whiteSpace: 'nowrap', overflow: 'hidden', userSelect: 'none',
+                    transition: 'background .16s ease, transform .16s ease',
+                    boxShadow: on ? 'inset 3px 0 0 var(--c-amber, #F6B100), 0 10px 26px rgba(15,168,224,.30)' : 'none',
+                  }}
+                  onMouseEnter={e => { if (!on) { e.currentTarget.style.background = 'var(--c-hover)'; e.currentTarget.style.transform = 'translateX(2px)'; } }}
+                  onMouseLeave={e => { e.currentTarget.style.background = on ? 'var(--c-primaryGradient, linear-gradient(135deg,#0FA8E0,#38CDF0))' : 'transparent'; e.currentTarget.style.transform = 'none'; }}
+                >
+                  <span style={{ width: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, opacity: on ? 1 : 0.72 }}>
+                    <item.Icon size={16} strokeWidth={on ? 2.4 : 2} />
+                  </span>
+                  {!collapsed && <span style={{ flex: 1, letterSpacing: '-0.01em', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.label}</span>}
+                </button>
+              );
+            })}
+          </div>
         ))}
       </div>
 
-      {tab === 'overview' && <Overview />}
-      {tab === 'admins' && <Admins isSuper={isSuper} />}
-      {tab === 'partners' && <Partners />}
-      {tab === 'plans' && <Plans />}
-      {tab === 'branding' && <BrandingTab />}
-      {tab === 'audit' && <Audit />}
+      <div style={{ borderTop: `1px solid ${C.sidebarBorder}` }}>
+        <button type="button" onClick={() => setCollapsed(p => !p)}
+          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          aria-expanded={!collapsed}
+          style={{
+            width: '100%', border: 'none', background: 'transparent', fontFamily: FONT,
+            display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer',
+            padding: collapsed ? '12px 0' : '11px 14px', justifyContent: collapsed ? 'center' : 'flex-start',
+          }}
+          onMouseEnter={e => e.currentTarget.style.background = 'var(--c-hover)'}
+          onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+        >
+          <span style={{ display: 'flex', color: C.textSecondary }}>
+            {collapsed ? <ChevronRight size={20} strokeWidth={2.5} /> : <ChevronLeft size={20} strokeWidth={2.5} />}
+          </span>
+          {!collapsed && <span style={{ fontSize: 13, fontWeight: 600, color: C.textSecondary }}>Collapse</span>}
+        </button>
+      </div>
     </div>
   );
 }
@@ -294,58 +416,192 @@ function useAsync(fn, deps) {
   return { data, error, loading, reload: run };
 }
 
-// ─── Overview / analytics ────────────────────────────────────────────────────
-function Overview() {
-  const { data, error, loading } = useAsync(() => api.platform.stats(), []);
-  if (loading) return <Muted>Loading…</Muted>;
-  if (error) return <ErrorBox msg={error} />;
+// ─── Dashboard (platform analytics) ──────────────────────────────────────────
 
-  const tiles = [
-    ['Monthly revenue', fmtMoney(data.mrr), C.green],
-    ['Admins (tenants)', data.tenants, C.text],
-    ['Active', data.active_tenants, C.green],
-    ['Suspended', data.suspended_tenants, '#DC2626'],
-    ['New this month', data.new_tenants_this_month, C.primary],
-    ['Organizations', data.organizations, C.text],
-    ['Users', data.users, C.text],
-    ['Live subscriptions', data.live_subscriptions, C.text],
-    ['Expiring ≤7 days', data.expiring_soon, C.amber],
-  ];
-  const dist = data.plan_distribution || [];
-  const maxCount = Math.max(1, ...dist.map(d => d.tenants));
+const RANGES = [7, 30, 90];
+const fmtDay = (d) => {
+  const dt = new Date(d);
+  return Number.isNaN(dt.getTime()) ? String(d) : dt.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+};
+
+function Dashboard() {
+  const [days, setDays] = useState(30);
+  const stats = useAsync(() => api.platform.stats(), []);
+  const an = useAsync(() => api.platform.analytics(days), [days]);
+
+  if (stats.loading && !stats.data) return <Muted>Loading…</Muted>;
+  if (stats.error) return <ErrorBox msg={stats.error} />;
+
+  const s = stats.data || {};
+  const a = an.data || {};
+  const mrr = Number(s.mrr || 0);            // pg NUMERIC arrives as a string
+  const adoption = a.adoption || {};
+  const lifecycle = a.lifecycle || {};
+  const mix = a.status_mix || {};
+  const dist = s.plan_distribution || [];
+
+  // Refetching holds the previous render at reduced opacity — no skeleton flash,
+  // no layout jump.
+  const dim = an.loading && an.data ? 0.55 : 1;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
-        {tiles.map(([label, val, color]) => (
-          <div key={label} style={card}>
-            <div style={{ fontSize: 12.5, color: C.textSecondary, fontWeight: 600 }}>{label}</div>
-            <div style={{ fontSize: 28, fontWeight: 800, marginTop: 6, color }}>{val ?? 0}</div>
-          </div>
-        ))}
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {/* KPI row — the numbers that ARE the chart */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
+        {/* Label kept short so it stays on one line and the hero value aligns
+            with the tiles beside it. */}
+        <StatTile hero label="Monthly revenue" value={fmtMoney(mrr)} tone="var(--viz-good)" icon={<TrendingUp size={14} />} />
+        <StatTile label="Active admins" value={compact(s.active_tenants ?? 0)} icon={<Users size={13} />} />
+        <StatTile label="Users" value={compact(s.users ?? 0)} icon={<Users size={13} />} />
+        <StatTile label="Active users (30d)" value={compact(adoption.mau ?? 0)} icon={<CheckCircle2 size={13} />} />
+        <StatTile label="Expiring ≤7 days" value={compact(s.expiring_soon ?? 0)}
+          tone={(s.expiring_soon ?? 0) > 0 ? 'var(--viz-warning)' : undefined} icon={<Clock size={13} />} />
       </div>
 
-      <div style={card}>
-        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 14 }}>Subscriptions by plan</div>
-        {dist.length === 0 ? <Muted>No live subscriptions yet.</Muted> : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {dist.map(d => (
-              <div key={d.plan_key} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <div style={{ width: 110, fontSize: 13, fontWeight: 600 }}>{d.plan_name}</div>
-                <div style={{ flex: 1, height: 22, background: C.pageBg, borderRadius: 6, overflow: 'hidden' }}>
-                  <div style={{
-                    width: `${(d.tenants / maxCount) * 100}%`, height: '100%',
-                    background: C.primary, borderRadius: 6, transition: 'width .4s',
-                  }} />
-                </div>
-                <div style={{ width: 120, textAlign: 'right', fontSize: 12.5, color: C.textSecondary }}>
-                  {d.tenants} · {fmtMoney(d.price_monthly)}/mo
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
+      {/* ONE filter row above everything it scopes — never per-chart filters */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: '.06em' }}>Range</span>
+        <div style={{ display: 'flex', gap: 4, background: C.surfaceAlt, padding: 3, borderRadius: 9 }}>
+          {RANGES.map(d => (
+            <button key={d} onClick={() => setDays(d)} style={{
+              padding: '5px 11px', borderRadius: 7, border: 'none', cursor: 'pointer', fontFamily: FONT,
+              fontSize: 12, fontWeight: 700,
+              background: days === d ? C.cardBg : 'transparent',
+              color: days === d ? C.text : C.textSecondary,
+              boxShadow: days === d ? C.shadowSm : 'none',
+            }}>Last {d} days</button>
+          ))}
+        </div>
+        {an.error && <span style={{ fontSize: 12, color: C.error }}>Analytics unavailable — {an.error}</span>}
       </div>
+
+      <div style={{ opacity: dim, transition: 'opacity .18s', display: 'flex', flexDirection: 'column', gap: 16 }}>
+        {/* Trends — two separate charts, never a dual axis */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 16 }}>
+          <ChartCard
+            title="New admins" subtitle={`Accounts created · last ${days} days`}
+            table={{
+              columns: [{ key: 'day', label: 'Day' }, { key: 'count', label: 'New admins', align: 'right' }],
+              rows: (a.signups || []).map(r => ({ day: fmtDay(r.day), count: r.count })),
+            }}
+          >
+            <LineChart data={a.signups || []} series={[{ key: 'count', label: 'New admins' }]} area formatX={fmtDay} />
+          </ChartCard>
+
+          <ChartCard
+            title="Message volume" subtitle={`Inbound vs outbound · last ${days} days`}
+            table={{
+              columns: [
+                { key: 'day', label: 'Day' },
+                { key: 'incoming', label: 'Inbound', align: 'right' },
+                { key: 'outgoing', label: 'Outbound', align: 'right' },
+              ],
+              rows: (a.messages || []).map(r => ({ day: fmtDay(r.day), incoming: r.incoming, outgoing: r.outgoing })),
+            }}
+          >
+            <LineChart
+              data={a.messages || []}
+              series={[{ key: 'incoming', label: 'Inbound' }, { key: 'outgoing', label: 'Outbound' }]}
+              formatX={fmtDay}
+            />
+          </ChartCard>
+        </div>
+
+        {/* Magnitude comparisons */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 16 }}>
+          <ChartCard
+            title="Subscriptions by plan" subtitle="Live subscriptions per tier"
+            table={{
+              columns: [
+                { key: 'plan', label: 'Plan' },
+                { key: 'tenants', label: 'Admins', align: 'right' },
+                { key: 'price', label: 'Price/mo', align: 'right' },
+              ],
+              rows: dist.map(d => ({ plan: d.plan_name, tenants: d.tenants, price: fmtMoney(d.price_monthly) })),
+            }}
+          >
+            {/* Plans are ordered TIERS → one hue, monotone lightness (ordinal ramp) */}
+            <BarChart
+              labelWidth={104}
+              data={dist.map((d, i) => ({
+                label: d.plan_name, value: d.tenants,
+                color: ordinalStep(i, Math.max(1, dist.length)),
+                hint: `${fmtMoney(d.price_monthly)}/mo`,
+              }))}
+            />
+          </ChartCard>
+
+          <ChartCard
+            title="Busiest admins" subtitle={`By messages · last ${days} days`}
+            table={{
+              columns: [{ key: 'name', label: 'Admin' }, { key: 'messages', label: 'Messages', align: 'right' }],
+              rows: (a.top_tenants || []).map(t => ({ name: t.name, messages: Number(t.messages).toLocaleString() })),
+            }}
+          >
+            {/* One series → one color (slot 1). Never a value-ramp on nominal names. */}
+            <BarChart
+              labelWidth={130}
+              data={(a.top_tenants || []).map(t => ({ label: t.name, value: t.messages, hint: 'Messages' }))}
+            />
+          </ChartCard>
+        </div>
+
+        {/* Adoption */}
+        <div>
+          <SubHead>Product adoption</SubHead>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
+            <StatTile label="WhatsApp connected" value={compact(adoption.wa_accounts ?? 0)} icon={<PlugZap size={13} />} />
+            <StatTile label="Via Facebook signup" value={compact(adoption.wa_via_facebook ?? 0)} icon={<PlugZap size={13} />} />
+            <StatTile label="AI agents" value={compact(adoption.agents ?? 0)} icon={<Bot size={13} />} />
+            <StatTile label="Contacts" value={compact(adoption.contacts ?? 0)} icon={<Contact size={13} />} />
+            <StatTile label="Not activated" value={compact(adoption.not_activated ?? 0)}
+              tone={(adoption.not_activated ?? 0) > 0 ? 'var(--viz-serious)' : undefined} icon={<AlertTriangle size={13} />} />
+          </div>
+        </div>
+
+        {/* Lifecycle — status colors always ship with an icon + label */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 16 }}>
+          <ChartCard title="Admin lifecycle" subtitle="Account states across the base">
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 9, paddingTop: 2 }}>
+              <StateRow icon={<CheckCircle2 size={14} />} color={STATUS.good} label="Active" value={mix.active ?? 0} />
+              <StateRow icon={<Clock size={14} />} color={STATUS.warning} label="Trial" value={mix.trial ?? 0} />
+              <StateRow icon={<AlertTriangle size={14} />} color={STATUS.serious} label="Suspended" value={mix.suspended ?? 0} />
+              <StateRow icon={<XCircle size={14} />} color={STATUS.critical} label="Cancelled" value={mix.cancelled ?? 0} />
+            </div>
+          </ChartCard>
+
+          <ChartCard title="Renewals at risk" subtitle="Live subscriptions approaching their period end">
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 9, paddingTop: 2 }}>
+              <StateRow icon={<Clock size={14} />} color={STATUS.critical} label="Expiring ≤7 days" value={lifecycle.expiring_7d ?? 0} />
+              <StateRow icon={<Clock size={14} />} color={STATUS.serious} label="Expiring ≤14 days" value={lifecycle.expiring_14d ?? 0} />
+              <StateRow icon={<Clock size={14} />} color={STATUS.warning} label="Expiring ≤30 days" value={lifecycle.expiring_30d ?? 0} />
+              <StateRow icon={<XCircle size={14} />} color={STATUS.critical} label="Pending cancellation" value={lifecycle.pending_cancellations ?? 0} />
+            </div>
+          </ChartCard>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SubHead({ children }) {
+  return (
+    <div style={{
+      fontSize: 11, fontWeight: 800, color: C.textMuted, textTransform: 'uppercase',
+      letterSpacing: '.08em', margin: '2px 0 10px',
+    }}>{children}</div>
+  );
+}
+
+// A state row: colored icon + text label + value. Never color alone.
+function StateRow({ icon, color, label, value }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+      <span style={{ display: 'flex', color, flexShrink: 0 }}>{icon}</span>
+      <span style={{ fontSize: 13, color: C.textSecondary, flex: 1, fontWeight: 600 }}>{label}</span>
+      <span style={{ fontSize: 15, fontWeight: 800, color: C.text, fontVariantNumeric: 'tabular-nums' }}>
+        {Number(value || 0).toLocaleString()}
+      </span>
     </div>
   );
 }

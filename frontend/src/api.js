@@ -412,6 +412,8 @@ export const api = {
   // ── SaaS: platform (Super Admin) ──────────────────────────────────────────
   platform: {
     stats: () => req('/platform/stats'),
+    // Dashboard time-series + adoption metrics. days: 7–90 (server clamps).
+    analytics: (days = 30) => req(`/platform/analytics?days=${encodeURIComponent(days)}`),
     tenants: () => req('/platform/tenants'),
     tenant: (id) => req(`/platform/tenants/${id}`),
     createTenant: (data) => req('/platform/tenants', { method: 'POST', body: JSON.stringify(data) }),

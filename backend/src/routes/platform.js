@@ -122,6 +122,137 @@ router.get('/platform/stats', async (req, res) => {
   }
 });
 
+// ─── Platform analytics (time series + adoption) ────────────────────────────
+// Powers the console dashboard's charts. Same reseller scoping as /platform/stats.
+// Every section runs independently and degrades to a safe default, so one slow or
+// failing metric can't 500 the whole dashboard.
+router.get('/platform/analytics', async (req, res) => {
+  const rid = scopeId(req);
+  const days = Math.max(7, Math.min(90, parseInt(req.query.days, 10) || 30));
+
+  // Reusable fragments: the operator's tenants, and a gap-filled day axis so a
+  // day with no activity plots as 0 instead of vanishing from the line.
+  const SCOPED = `SELECT id FROM coexistence.tenants
+                   WHERE deleted_at IS NULL AND reseller_id IS NOT DISTINCT FROM $1`;
+  const DAY_AXIS = `SELECT generate_series(
+                      date_trunc('day', NOW()) - (($2::int - 1) * INTERVAL '1 day'),
+                      date_trunc('day', NOW()), INTERVAL '1 day')::date AS day`;
+
+  const safe = async (label, fn, fallback) => {
+    try { return await fn(); } catch (e) {
+      console.warn(`[platform] analytics.${label} failed:`, e.message);
+      return fallback;
+    }
+  };
+
+  try {
+    const [signups, messages, statusMix, adoption, topTenants, lifecycle] = await Promise.all([
+      // New admins (tenants) per day.
+      safe('signups', async () => {
+        const { rows } = await pool.query(`
+          WITH d AS (${DAY_AXIS})
+          SELECT d.day, COALESCE(x.n, 0)::int AS count
+            FROM d LEFT JOIN (
+              SELECT date_trunc('day', created_at)::date AS day, COUNT(*) AS n
+                FROM coexistence.tenants
+               WHERE deleted_at IS NULL AND reseller_id IS NOT DISTINCT FROM $1
+                 AND created_at >= date_trunc('day', NOW()) - (($2::int - 1) * INTERVAL '1 day')
+               GROUP BY 1
+            ) x ON x.day = d.day
+           ORDER BY d.day`, [rid, days]);
+        return rows;
+      }, []),
+
+      // Message volume per day, split inbound vs outbound (two series).
+      safe('messages', async () => {
+        const { rows } = await pool.query(`
+          WITH d AS (${DAY_AXIS})
+          SELECT d.day,
+                 COALESCE(x.incoming, 0)::int AS incoming,
+                 COALESCE(x.outgoing, 0)::int AS outgoing
+            FROM d LEFT JOIN (
+              SELECT date_trunc('day', c.timestamp)::date AS day,
+                     COUNT(*) FILTER (WHERE c.direction = 'incoming') AS incoming,
+                     COUNT(*) FILTER (WHERE c.direction = 'outgoing') AS outgoing
+                FROM coexistence.chat_history c
+               WHERE c.tenant_id IN (${SCOPED})
+                 AND c.timestamp >= date_trunc('day', NOW()) - (($2::int - 1) * INTERVAL '1 day')
+               GROUP BY 1
+            ) x ON x.day = d.day
+           ORDER BY d.day`, [rid, days]);
+        return rows;
+      }, []),
+
+      // Lifecycle mix of admins (tenants) — states, rendered with status tokens.
+      safe('statusMix', async () => {
+        const { rows } = await pool.query(`
+          SELECT status, COUNT(*)::int AS count
+            FROM coexistence.tenants
+           WHERE deleted_at IS NULL AND reseller_id IS NOT DISTINCT FROM $1
+           GROUP BY status`, [rid]);
+        const out = { active: 0, trial: 0, suspended: 0, cancelled: 0 };
+        for (const r of rows) if (r.status in out) out[r.status] = r.count;
+        return out;
+      }, { active: 0, trial: 0, suspended: 0, cancelled: 0 }),
+
+      // Product adoption across the installed base.
+      safe('adoption', async () => {
+        const { rows } = await pool.query(`
+          WITH scoped AS (${SCOPED})
+          SELECT
+            (SELECT COUNT(*)::int FROM coexistence.whatsapp_accounts WHERE tenant_id IN (SELECT id FROM scoped)) AS wa_accounts,
+            (SELECT COUNT(*)::int FROM coexistence.whatsapp_accounts WHERE tenant_id IN (SELECT id FROM scoped) AND is_active) AS wa_active,
+            (SELECT COUNT(*)::int FROM coexistence.whatsapp_accounts WHERE tenant_id IN (SELECT id FROM scoped) AND connection_method = 'embedded_signup') AS wa_via_facebook,
+            (SELECT COUNT(*)::int FROM coexistence.agents WHERE tenant_id IN (SELECT id FROM scoped)) AS agents,
+            (SELECT COUNT(*)::int FROM coexistence.agents WHERE tenant_id IN (SELECT id FROM scoped) AND is_active) AS agents_active,
+            (SELECT COUNT(*)::int FROM coexistence.contacts WHERE tenant_id IN (SELECT id FROM scoped)) AS contacts,
+            (SELECT COUNT(*)::int FROM coexistence.z_chat_users
+               WHERE tenant_id IN (SELECT id FROM scoped) AND last_login_at >= NOW() - INTERVAL '30 days') AS mau,
+            (SELECT COUNT(*)::int FROM coexistence.tenants t
+               WHERE t.deleted_at IS NULL AND t.reseller_id IS NOT DISTINCT FROM $1
+                 AND NOT EXISTS (SELECT 1 FROM coexistence.whatsapp_accounts w WHERE w.tenant_id = t.id)) AS not_activated
+        `, [rid]);
+        return rows[0];
+      }, {}),
+
+      // Busiest admins by message volume in the window.
+      safe('topTenants', async () => {
+        const { rows } = await pool.query(`
+          SELECT t.id, t.name, COUNT(c.*)::int AS messages
+            FROM coexistence.tenants t
+            JOIN coexistence.chat_history c ON c.tenant_id = t.id
+           WHERE t.deleted_at IS NULL AND t.reseller_id IS NOT DISTINCT FROM $1
+             AND c.timestamp >= NOW() - ($2::int * INTERVAL '1 day')
+           GROUP BY t.id, t.name
+           ORDER BY messages DESC
+           LIMIT 6`, [rid, days]);
+        return rows;
+      }, []),
+
+      // Renewal / churn risk buckets.
+      safe('lifecycle', async () => {
+        const { rows } = await pool.query(`
+          WITH scoped AS (${SCOPED}), live AS (
+            SELECT * FROM coexistence.subscriptions
+             WHERE status IN ('active','trialing','past_due') AND tenant_id IN (SELECT id FROM scoped)
+          )
+          SELECT
+            (SELECT COUNT(*)::int FROM live WHERE current_period_end BETWEEN NOW() AND NOW() + INTERVAL '7 days')  AS expiring_7d,
+            (SELECT COUNT(*)::int FROM live WHERE current_period_end BETWEEN NOW() AND NOW() + INTERVAL '14 days') AS expiring_14d,
+            (SELECT COUNT(*)::int FROM live WHERE current_period_end BETWEEN NOW() AND NOW() + INTERVAL '30 days') AS expiring_30d,
+            (SELECT COUNT(*)::int FROM live WHERE cancel_at_period_end = TRUE) AS pending_cancellations
+        `, [rid]);
+        return rows[0];
+      }, {}),
+    ]);
+
+    res.json({ range: { days }, signups, messages, status_mix: statusMix, adoption, top_tenants: topTenants, lifecycle });
+  } catch (err) {
+    console.error('[platform] analytics error:', err.message);
+    res.status(500).json({ error: 'Failed to load analytics' });
+  }
+});
+
 // ─── Tenants ────────────────────────────────────────────────────────────────
 router.get('/platform/tenants', async (req, res) => {
   try {
