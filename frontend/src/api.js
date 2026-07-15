@@ -38,13 +38,27 @@ export const api = {
       req('/auth/setup', { method: 'POST', body: JSON.stringify({ email, password, displayName }) }),
     login: (email, password) =>
       req('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
-    // Direct "Sign in with Facebook" for a returning, already-linked user.
-    facebook: (accessToken) =>
-      req('/auth/facebook', { method: 'POST', body: JSON.stringify({ accessToken }) }),
+    // Self-serve signup. `partnerSlug` is the ?w=<slug> the visitor arrived
+    // with — it attributes the new workspace to that partner. Resolves to
+    // { user } when the server has no mailer, or { verificationRequired: true }
+    // when a confirmation link was sent instead.
+    signup: (payload) =>
+      req('/auth/signup', { method: 'POST', body: JSON.stringify(payload) }),
+    verifyEmail: (token) =>
+      req('/auth/verify-email', { method: 'POST', body: JSON.stringify({ token }) }),
+    resendVerification: (email) =>
+      req('/auth/resend-verification', { method: 'POST', body: JSON.stringify({ email }) }),
+    // "Sign in with Facebook". Signs in a linked user, and creates a workspace
+    // for a Facebook identity we've never seen.
+    facebook: (accessToken, extra = {}) =>
+      req('/auth/facebook', { method: 'POST', body: JSON.stringify({ accessToken, ...extra }) }),
     logout: () => req('/auth/logout', { method: 'POST' }),
   },
-  // Public runtime config (Facebook SDK app id/config id). No auth.
+  // Public runtime config (Facebook SDK app id/config id, whether email
+  // verification is on). No auth.
   publicConfig: () => req('/public-config'),
+  // Public plan catalog for the signup screen, scoped to a partner via ?w=. No auth.
+  publicPlans: (slug) => req(`/public-plans${slug ? `?w=${encodeURIComponent(slug)}` : ''}`),
   // Public white-label login branding by reseller slug (?w=<slug>). No auth.
   brandingBySlug: (slug) => req(`/branding/by-slug/${encodeURIComponent(slug)}`),
   dashboard: (range = '7d') => req(`/dashboard?range=${encodeURIComponent(range)}`),
@@ -442,6 +456,12 @@ export const api = {
     updateMyReseller: (data) => req('/platform/my-reseller', { method: 'PATCH', body: JSON.stringify(data) }),
     audit: (limit = 100) => req(`/platform/audit?limit=${limit}`),
     tenantUsers: (id) => req(`/platform/tenants/${id}/users`),
+    // Plan requests: customers asking to buy a plan. Approving one activates the
+    // subscription (payment is collected out of band — there is no gateway).
+    planRequests: (status = 'pending') => req(`/platform/plan-requests?status=${encodeURIComponent(status)}`),
+    approvePlanRequest: (id) => req(`/platform/plan-requests/${id}/approve`, { method: 'POST' }),
+    rejectPlanRequest: (id, note) =>
+      req(`/platform/plan-requests/${id}/reject`, { method: 'POST', body: JSON.stringify({ note }) }),
     impersonate: (targetUserId, reason) =>
       req('/platform/impersonate', { method: 'POST', body: JSON.stringify({ targetUserId, reason }) }),
   },
@@ -457,9 +477,15 @@ export const api = {
   // ── SaaS: impersonation ───────────────────────────────────────────────────
   stopImpersonation: () => req('/auth/impersonation/stop', { method: 'POST' }),
 
-  // ── SaaS: billing / entitlements (read-only) ──────────────────────────────
+  // ── SaaS: billing / entitlements ──────────────────────────────────────────
   billing: {
     entitlements: () => req('/billing/entitlements'),
+    // Plan changes are not self-serve (no payment gateway): a workspace admin
+    // files a request, an operator approves it once payment clears.
+    planRequest: () => req('/billing/plan-request'),
+    requestPlan: (planKey, billingCycle = 'monthly', note) =>
+      req('/billing/plan-request', { method: 'POST', body: JSON.stringify({ planKey, billingCycle, note }) }),
+    cancelPlanRequest: () => req('/billing/plan-request', { method: 'DELETE' }),
   },
 
   // ── SaaS: tenant audit log ────────────────────────────────────────────────

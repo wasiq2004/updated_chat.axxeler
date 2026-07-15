@@ -63,8 +63,21 @@ export default function App() {
   // (?w=<slug>) always goes straight to that partner's branded login.
   const partnerSlug = readPartnerSlug();
   const [showLogin, setShowLogin] = useState(() => {
-    try { return /#\/?login\b/.test(window.location.hash || ''); } catch { return false; }
+    try { return /#\/?(login|signup)\b/.test(window.location.hash || ''); } catch { return false; }
   });
+  // Which face of the login screen to open on. The landing page's "Start Free"
+  // means "create an account", so it must not drop people on a sign-in form they
+  // have no credentials for.
+  const [authMode, setAuthMode] = useState(() => {
+    try { return /#\/?signup\b/.test(window.location.hash || '') ? 'signup' : 'signin'; } catch { return 'signin'; }
+  });
+  // ?verify=<token> — the link from the confirmation email. Held in state so the
+  // token can be stripped from the URL immediately after it's consumed (it is
+  // single-use, and it should not sit in history or a shared screenshot).
+  const [verifyToken, setVerifyToken] = useState(() => {
+    try { return new URLSearchParams(window.location.search).get('verify'); } catch { return null; }
+  });
+  const [verifyState, setVerifyState] = useState(null); // null | 'working' | 'failed'
   const [routeParts, navigate, replaceRoute] = useHashRoute();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   // Light/dark theme. Initialized from the data-theme the no-flash boot script in
@@ -209,6 +222,12 @@ export default function App() {
   };
 
   useEffect(() => {
+    // Arriving on a ?verify= link: the confirmation effect below owns the
+    // session. Skipping the normal check here is not an optimisation — both run
+    // concurrently, and there is no cookie yet, so /auth/me 401s and its
+    // `.catch(() => setUser(null))` would race the verified user right back out
+    // and dump a just-confirmed person on the login screen.
+    if (verifyToken) { setChecking(false); return; }
     // First check whether the instance needs first-run setup (no users yet).
     // If so, show the setup wizard; otherwise resume the normal session check.
     api.auth.status()
@@ -228,6 +247,30 @@ export default function App() {
       });
   }, []);
 
+  // Consume the ?verify=<token> link from the confirmation email. On success the
+  // server issues the session cookie, so this both verifies and signs in — the
+  // person clicks the link and is simply inside their new workspace.
+  useEffect(() => {
+    if (!verifyToken) return;
+    let alive = true;
+    setVerifyState('working');
+    api.auth.verifyEmail(verifyToken)
+      .then(({ user: u }) => { if (alive) { setUser(u); setVerifyState(null); setShowLogin(true); } })
+      .catch(() => { if (alive) setVerifyState('failed'); })
+      .finally(() => {
+        if (!alive) return;
+        setVerifyToken(null);
+        // Strip the single-use token from the address bar so a reload doesn't
+        // retry a spent token and show a false "link expired".
+        try {
+          const url = new URL(window.location.href);
+          url.searchParams.delete('verify');
+          window.history.replaceState({}, '', url.toString());
+        } catch { /* ignore */ }
+      });
+    return () => { alive = false; };
+  }, [verifyToken]);
+
   const handleLogout = async () => {
     await api.auth.logout().catch(() => {});
     setUser(null);
@@ -241,7 +284,7 @@ export default function App() {
   if (publicPath === '/privacy-policy') return <PrivacyPolicyPage />;
   if (publicPath === '/terms-and-conditions') return <TermsPage />;
 
-  if (checking) {
+  if (checking || verifyState === 'working') {
     return (
       <div style={{
         minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -252,7 +295,43 @@ export default function App() {
           border: `3px solid ${C.border}`, borderTopColor: 'var(--c-primary)',
           borderRadius: '50%', animation: 'spin 0.75s linear infinite',
         }} />
-        <div style={{ fontSize: 12, color: C.textSecondary, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase' }}>Loading...</div>
+        <div style={{ fontSize: 12, color: C.textSecondary, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+          {verifyState === 'working' ? 'Confirming your email…' : 'Loading...'}
+        </div>
+      </div>
+    );
+  }
+
+  // A spent or expired confirmation link. Dead-ends into an explanation with a
+  // way out, rather than silently dropping them on a login they'd fail.
+  if (!user && verifyState === 'failed') {
+    return (
+      <div style={{
+        minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        fontFamily: FONT, background: C.pageBg, padding: 24,
+      }}>
+        <div style={{
+          maxWidth: 420, textAlign: 'center', background: C.cardBg,
+          border: `1px solid ${C.border}`, borderRadius: 14, padding: '32px 28px',
+        }}>
+          <h2 style={{ fontSize: 22, fontWeight: 700, color: C.text, marginBottom: 10, letterSpacing: '-0.02em' }}>
+            This link has expired
+          </h2>
+          <p style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.6, marginBottom: 22 }}>
+            Confirmation links last 24 hours and can only be used once. Sign in to
+            have a new one sent, or create your account again.
+          </p>
+          <button
+            type="button"
+            onClick={() => { setVerifyState(null); setAuthMode('signin'); setShowLogin(true); }}
+            style={{
+              padding: '11px 22px', borderRadius: 10, border: 'none', background: C.primary,
+              color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer', fontFamily: FONT,
+            }}
+          >
+            Go to sign in
+          </button>
+        </div>
       </div>
     );
   }
@@ -269,13 +348,16 @@ export default function App() {
     if (!showLogin && !partnerSlug) {
       return (
         <LandingPage
-          onGetStarted={() => setShowLogin(true)}
+          // "Start Free" opens the signup form; "Log in" opens sign-in. The
+          // landing page tells us which was clicked.
+          onGetStarted={(intent) => { setAuthMode(intent === 'login' ? 'signin' : 'signup'); setShowLogin(true); }}
           onNavigate={(path) => { window.location.href = path; }}
         />
       );
     }
     return (
       <LoginGate
+        initialMode={authMode}
         onLogin={(u) => { setUser(u); navigate('home'); }}
         onBack={partnerSlug ? undefined : () => setShowLogin(false)}
       />
@@ -307,7 +389,7 @@ export default function App() {
       case 'chatbot-builder': return <ChatbotBuilderPage subParts={subParts} navigate={navigate} />;
       case 'ai-agent-builder': return <AiAgentBuilderPage user={user} navigate={navigate} />;
       // case 'about': return <AboutUsPage />;  // About Us hidden
-      case 'billing': return <BillingPage entitlements={entitlements} />;
+      case 'billing': return <BillingPage entitlements={entitlements} user={user} />;
       case 'organizations': return <OrganizationsPage onOrgsChanged={loadOrgs} activeOrg={activeOrg} />;
       case 'branding': return <BrandingPage onSaved={loadEntitlements} managedByReseller={entitlements?.brandingManagedByReseller} />;
       case 'audit': return <AuditPage />;

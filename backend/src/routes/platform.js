@@ -260,7 +260,14 @@ router.get('/platform/tenants', async (req, res) => {
       SELECT t.id, t.name, t.slug, t.status, t.created_at, t.trial_ends_at,
              p.key AS plan_key, p.name AS plan_name,
              (SELECT COUNT(*)::int FROM coexistence.organizations o WHERE o.tenant_id = t.id AND o.deleted_at IS NULL) AS organizations,
-             (SELECT COUNT(*)::int FROM coexistence.z_chat_users u WHERE u.tenant_id = t.id) AS users
+             (SELECT COUNT(*)::int FROM coexistence.z_chat_users u WHERE u.tenant_id = t.id) AS users,
+             -- How this workspace came to exist: 'invite' (an operator created
+             -- it), 'self_serve' (public signup form) or 'facebook'. Read from
+             -- the owner — the oldest user in the tenant.
+             (SELECT u.signup_source FROM coexistence.z_chat_users u
+               WHERE u.tenant_id = t.id ORDER BY u.id ASC LIMIT 1) AS signup_source,
+             (SELECT COUNT(*)::int FROM coexistence.plan_requests pr
+               WHERE pr.tenant_id = t.id AND pr.status = 'pending') AS pending_plan_requests
         FROM coexistence.tenants t
         LEFT JOIN coexistence.plans p ON p.id = t.plan_id
        WHERE t.deleted_at IS NULL AND t.reseller_id IS NOT DISTINCT FROM $1
@@ -541,6 +548,144 @@ router.post('/platform/tenants/:id/subscription', async (req, res) => {
     res.status(500).json({ error: 'Failed to change subscription' });
   } finally {
     client.release();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Plan requests — the operator side of self-serve "purchase".
+//
+// A customer picks a paid plan; because there is no payment gateway, that lands
+// here as a pending request. The operator collects payment out of band and
+// approves, which performs exactly the same subscription change as
+// POST /platform/tenants/:id/subscription. Scoped like everything else: a
+// partner only ever sees requests from their own tenants.
+// ---------------------------------------------------------------------------
+
+// GET /platform/plan-requests?status=pending
+router.get('/platform/plan-requests', async (req, res) => {
+  const status = ['pending', 'approved', 'rejected', 'cancelled'].includes(req.query.status)
+    ? req.query.status : 'pending';
+  try {
+    const { rows } = await pool.query(
+      `SELECT pr.id, pr.status, pr.billing_cycle, pr.note, pr.created_at, pr.decided_at,
+              t.id AS tenant_id, t.name AS tenant_name, t.slug AS tenant_slug,
+              p.key AS plan_key, p.name AS plan_name, p.price_monthly, p.price_yearly, p.currency,
+              cur.key AS current_plan_key, cur.name AS current_plan_name,
+              u.email AS requested_by_email, u.display_name AS requested_by_name
+         FROM coexistence.plan_requests pr
+         JOIN coexistence.tenants t ON t.id = pr.tenant_id
+         JOIN coexistence.plans   p ON p.id = pr.plan_id
+         LEFT JOIN coexistence.plans cur ON cur.id = t.plan_id
+         LEFT JOIN coexistence.z_chat_users u ON u.id = pr.requested_by
+        WHERE pr.status = $1
+          AND t.deleted_at IS NULL
+          AND t.reseller_id IS NOT DISTINCT FROM $2
+        ORDER BY pr.created_at DESC
+        LIMIT 200`,
+      [status, scopeId(req)]
+    );
+    res.json(rows.map(r => ({
+      id: r.id,
+      status: r.status,
+      billingCycle: r.billing_cycle,
+      note: r.note,
+      createdAt: r.created_at,
+      decidedAt: r.decided_at,
+      tenant: { id: r.tenant_id, name: r.tenant_name, slug: r.tenant_slug },
+      plan: {
+        key: r.plan_key, name: r.plan_name, currency: r.currency,
+        priceMonthly: r.price_monthly, priceYearly: r.price_yearly,
+      },
+      currentPlan: r.current_plan_key ? { key: r.current_plan_key, name: r.current_plan_name } : null,
+      requestedBy: r.requested_by_email ? { email: r.requested_by_email, name: r.requested_by_name } : null,
+    })));
+  } catch (err) {
+    console.error('[platform] plan-requests list error:', err.message);
+    res.status(500).json({ error: 'Failed to list plan requests' });
+  }
+});
+
+// POST /platform/plan-requests/:id/approve — activate the requested plan.
+router.post('/platform/plan-requests/:id/approve', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    // Re-read under the operator's scope so a partner can't approve a request
+    // belonging to someone else's tenant by guessing an id.
+    const { rows: reqRows } = await client.query(
+      `SELECT pr.id, pr.tenant_id, pr.plan_id, pr.billing_cycle
+         FROM coexistence.plan_requests pr
+         JOIN coexistence.tenants t ON t.id = pr.tenant_id
+        WHERE pr.id = $1 AND pr.status = 'pending'
+          AND t.deleted_at IS NULL
+          AND t.reseller_id IS NOT DISTINCT FROM $2`,
+      [req.params.id, scopeId(req)]
+    );
+    if (!reqRows.length) return res.status(404).json({ error: 'Request not found' });
+    const pr = reqRows[0];
+    const cycle = pr.billing_cycle === 'yearly' ? 'yearly' : 'monthly';
+
+    await client.query('BEGIN');
+    // Same shape as POST /platform/tenants/:id/subscription: retire every live
+    // subscription first, or idx_subscriptions_one_live rejects the insert.
+    await client.query(
+      `UPDATE coexistence.subscriptions SET status = 'cancelled', updated_at = NOW()
+        WHERE tenant_id = $1 AND status IN ('active','trialing','past_due','suspended')`,
+      [pr.tenant_id]
+    );
+    await client.query(
+      `INSERT INTO coexistence.subscriptions
+         (tenant_id, plan_id, status, billing_cycle, current_period_start, current_period_end)
+       VALUES ($1, $2, 'active', $3, NOW(), ${periodEndExpr(cycle)})`,
+      [pr.tenant_id, pr.plan_id, cycle]
+    );
+    await client.query(
+      `UPDATE coexistence.tenants SET plan_id = $1, status = 'active', updated_at = NOW() WHERE id = $2`,
+      [pr.plan_id, pr.tenant_id]
+    );
+    await client.query(
+      `UPDATE coexistence.plan_requests
+          SET status = 'approved', decided_by = $1, decided_at = NOW(), updated_at = NOW()
+        WHERE id = $2`,
+      [req.user.id, pr.id]
+    );
+    await client.query('COMMIT');
+
+    await auditLog({
+      actor: req.user, action: 'platform.plan_request.approve',
+      targetType: 'tenant', targetId: pr.tenant_id, tenantId: Number(pr.tenant_id),
+      payload: { requestId: pr.id, billingCycle: cycle, ip: clientIp(req) },
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch { /* ignore */ }
+    console.error('[platform] approve plan-request error:', err.message);
+    res.status(500).json({ error: 'Failed to approve request' });
+  } finally {
+    client.release();
+  }
+});
+
+// POST /platform/plan-requests/:id/reject — Body: { note }
+router.post('/platform/plan-requests/:id/reject', async (req, res) => {
+  try {
+    const { rowCount } = await pool.query(
+      `UPDATE coexistence.plan_requests pr
+          SET status = 'rejected', decided_by = $1, decided_at = NOW(),
+              note = COALESCE($3, pr.note), updated_at = NOW()
+         FROM coexistence.tenants t
+        WHERE pr.tenant_id = t.id AND pr.id = $2 AND pr.status = 'pending'
+          AND t.reseller_id IS NOT DISTINCT FROM $4`,
+      [req.user.id, req.params.id, req.body?.note ? String(req.body.note).slice(0, 500) : null, scopeId(req)]
+    );
+    if (!rowCount) return res.status(404).json({ error: 'Request not found' });
+    await auditLog({
+      actor: req.user, action: 'platform.plan_request.reject',
+      targetType: 'plan_request', targetId: req.params.id, payload: { ip: clientIp(req) },
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[platform] reject plan-request error:', err.message);
+    res.status(500).json({ error: 'Failed to reject request' });
   }
 });
 

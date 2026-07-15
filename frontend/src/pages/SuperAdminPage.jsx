@@ -15,7 +15,7 @@ import {
   LayoutDashboard, Users, Building2, CreditCard, Palette, ScrollText,
   ChevronLeft, ChevronRight, TrendingUp, Bot, Contact,
   PlugZap, CheckCircle2, AlertTriangle, XCircle, Clock, ShieldAlert,
-  KeyRound, Trash2,
+  KeyRound, Trash2, Receipt, Check,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { C, FONT } from '../constants.js';
@@ -35,7 +35,12 @@ function navGroupsFor(user) {
         ...(user?.isSuperAdmin ? [{ key: 'partners', label: 'Partners', Icon: Building2 }] : []),
       ],
     },
-    { title: 'Billing', items: [{ key: 'plans', label: 'Plans', Icon: CreditCard }] },
+    {
+      title: 'Billing', items: [
+        { key: 'plans', label: 'Plans', Icon: CreditCard },
+        { key: 'requests', label: 'Plan Requests', Icon: Receipt },
+      ],
+    },
     {
       title: 'System', items: [
         ...(user?.isResellerAdmin ? [{ key: 'branding', label: 'Branding', Icon: Palette }] : []),
@@ -51,6 +56,7 @@ const SECTION_TITLES = {
   admins: ['Admins', 'Every customer account, their organizations, users and plan.'],
   partners: ['Partners', 'White-label resellers with their own branded login and console.'],
   plans: ['Plans', 'The plan catalog: pricing, limits and included features.'],
+  requests: ['Plan Requests', 'Customers asking to buy a plan. Approving one activates it — collect payment first.'],
   branding: ['Branding', 'How your customers see your white-label workspace.'],
   audit: ['Audit Log', 'Every platform mutation, newest first.'],
 };
@@ -125,6 +131,7 @@ export default function SuperAdminPage({ user }) {
           {tab === 'admins' && <Admins isSuper={isSuper} />}
           {tab === 'partners' && <Partners />}
           {tab === 'plans' && <Plans />}
+          {tab === 'requests' && <PlanRequests />}
           {tab === 'branding' && <BrandingTab />}
           {tab === 'audit' && <Audit />}
         </div>
@@ -1228,6 +1235,127 @@ function PlanEditor({ plan, allFeatures, onClose, onSaved }) {
 }
 
 // ─── Audit ───────────────────────────────────────────────────────────────────
+// ─── Plan requests ───────────────────────────────────────────────────────────
+// Customers can't charge themselves — there's no gateway — so a chosen plan
+// lands here. Approving performs the same subscription change as the Admins tab,
+// which is why the button says what it does: money first, then activate.
+function PlanRequests() {
+  const [status, setStatus] = useState('pending');
+  const { data, error, loading, reload } = useAsync(() => api.platform.planRequests(status), [status]);
+  const [busy, setBusy] = useState(0);
+  const [actionErr, setActionErr] = useState('');
+
+  const act = async (id, fn) => {
+    setActionErr('');
+    setBusy(id);
+    try {
+      await fn();
+      reload();
+    } catch (e) {
+      setActionErr(e.message || 'Action failed.');
+    } finally {
+      setBusy(0);
+    }
+  };
+
+  if (loading && !data) return <Muted>Loading…</Muted>;
+  if (error) return <ErrorBox msg={error} />;
+  const rows = data || [];
+
+  return (
+    <>
+      {actionErr && <ErrorBox msg={actionErr} />}
+      <div style={{ display: 'flex', gap: 4, padding: 4, marginBottom: 16, background: C.surfaceAlt, borderRadius: 9, width: 'fit-content' }}>
+        {[['pending', 'Pending'], ['approved', 'Approved'], ['rejected', 'Rejected']].map(([key, label]) => {
+          const active = status === key;
+          return (
+            <button
+              key={key} type="button" aria-pressed={active}
+              onClick={() => setStatus(key)}
+              style={{
+                padding: '6px 14px', borderRadius: 7, border: 'none', cursor: 'pointer',
+                fontFamily: FONT, fontSize: 12.5, fontWeight: 700,
+                background: active ? C.cardBg : 'transparent',
+                color: active ? C.text : C.textSecondary,
+                boxShadow: active ? '0 1px 4px rgba(0,0,0,0.10)' : 'none',
+              }}
+            >{label}</button>
+          );
+        })}
+      </div>
+
+      {rows.length === 0 ? (
+        <div style={{ ...card, textAlign: 'center', padding: 40 }}>
+          <Receipt size={26} color={C.textMuted} style={{ marginBottom: 10 }} />
+          <div style={{ fontSize: 14, fontWeight: 700, color: C.text, marginBottom: 4 }}>
+            No {status} requests
+          </div>
+          <div style={{ fontSize: 13, color: C.textMuted }}>
+            When a customer picks a plan from their billing page, it shows up here.
+          </div>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {rows.map(r => (
+            <div key={r.id} style={{ ...card, display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+              <div style={{ flex: 1, minWidth: 220 }}>
+                <div style={{ fontSize: 14.5, fontWeight: 800, marginBottom: 3 }}>{r.tenant.name}</div>
+                <div style={{ fontSize: 12.5, color: C.textSecondary }}>
+                  {r.currentPlan ? r.currentPlan.name : 'No plan'} → <strong style={{ color: C.text }}>{r.plan.name}</strong>
+                  {' · '}{r.billingCycle}
+                </div>
+                {r.requestedBy && (
+                  <div style={{ fontSize: 11.5, color: C.textMuted, marginTop: 3 }}>
+                    Requested by {r.requestedBy.name || r.requestedBy.email} · {fmtDate(r.createdAt)}
+                  </div>
+                )}
+                {r.note && (
+                  <div style={{ fontSize: 12, color: C.textSecondary, marginTop: 6, fontStyle: 'italic' }}>“{r.note}”</div>
+                )}
+              </div>
+
+              <div style={{ textAlign: 'right', minWidth: 110 }}>
+                <div style={{ fontSize: 17, fontWeight: 800, fontVariantNumeric: 'tabular-nums' }}>
+                  {fmtMoney(
+                    Number(r.billingCycle === 'yearly' ? r.plan.priceYearly : r.plan.priceMonthly),
+                    r.plan.currency
+                  )}
+                </div>
+                <div style={{ fontSize: 11, color: C.textMuted, fontWeight: 600 }}>
+                  {r.billingCycle === 'yearly' ? 'per year' : 'per month'}
+                </div>
+              </div>
+
+              {r.status === 'pending' ? (
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button
+                    type="button" disabled={busy === r.id}
+                    onClick={() => act(r.id, () => api.platform.approvePlanRequest(r.id))}
+                    style={{ ...btnPrimary, display: 'inline-flex', alignItems: 'center', gap: 6, opacity: busy === r.id ? 0.6 : 1 }}
+                  >
+                    <Check size={14} /> {busy === r.id ? 'Working…' : 'Approve & activate'}
+                  </button>
+                  <button
+                    type="button" disabled={busy === r.id}
+                    onClick={() => act(r.id, () => api.platform.rejectPlanRequest(r.id))}
+                    style={{ ...btn, display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                  >
+                    <XCircle size={14} /> Reject
+                  </button>
+                </div>
+              ) : (
+                <span style={{ fontSize: 12, color: C.textMuted, fontWeight: 600 }}>
+                  {r.status} · {fmtDate(r.decidedAt)}
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
 function Audit() {
   const { data, error, loading } = useAsync(() => api.platform.audit(150), []);
   if (loading) return <Muted>Loading…</Muted>;

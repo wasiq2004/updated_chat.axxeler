@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Lock, LogIn, Eye, EyeOff, ArrowLeft } from 'lucide-react';
+import { Lock, LogIn, Eye, EyeOff, ArrowLeft, UserPlus, MailCheck } from 'lucide-react';
 import { api } from '../api.js';
 import { C, FONT } from '../constants.js';
 import { loadFacebookSdk, fbLogin } from '../lib/facebook.js';
@@ -17,21 +17,30 @@ function readPartnerSlug() {
   return null;
 }
 
-export default function LoginGate({ onLogin, onBack }) {
+// `mode` is 'signin' | 'signup' | 'sent'. 'sent' is only reachable when the
+// server has a mailer: with no SMTP configured, signup returns a session and we
+// go straight into the app (see services/emailVerification on the backend).
+export default function LoginGate({ onLogin, onBack, initialMode = 'signin' }) {
+  const [mode, setMode] = useState(initialMode === 'signup' ? 'signup' : 'signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [name, setName] = useState('');
+  const [company, setCompany] = useState('');
   const [showPw, setShowPw] = useState(false);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState(false);
   const [brand, setBrand] = useState(null); // partner white-label branding
   const [fbEnabled, setFbEnabled] = useState(false);
   const [fbLoading, setFbLoading] = useState(false);
 
+  const partnerSlug = readPartnerSlug();
+  const isSignup = mode === 'signup';
+
   useEffect(() => {
-    const slug = readPartnerSlug();
-    if (!slug) return;
-    api.brandingBySlug(slug).then(b => { if (b?.found) setBrand(b); }).catch(() => {});
-  }, []);
+    if (!partnerSlug) return;
+    api.brandingBySlug(partnerSlug).then(b => { if (b?.found) setBrand(b); }).catch(() => {});
+  }, [partnerSlug]);
 
   // Show the "Sign in with Facebook" button only when the server has a Meta app
   // configured. Preload the SDK so the click is instant.
@@ -40,6 +49,12 @@ export default function LoginGate({ onLogin, onBack }) {
     loadFacebookSdk().then(cfg => { if (alive) setFbEnabled(!!cfg?.enabled); }).catch(() => {});
     return () => { alive = false; };
   }, []);
+
+  const switchMode = (next) => {
+    setMode(next);
+    setError('');
+    setNotice('');
+  };
 
   const handleFacebook = async () => {
     setError('');
@@ -50,7 +65,9 @@ export default function LoginGate({ onLogin, onBack }) {
       const resp = await fbLogin({ scope: 'public_profile,email' });
       const token = resp?.authResponse?.accessToken;
       if (!token) { setError('Facebook sign-in was cancelled.'); return; }
-      const { user } = await api.auth.facebook(token);
+      // Pass the partner slug: a first-time Facebook user is signed up here, and
+      // their workspace must land under the partner whose link they arrived on.
+      const { user } = await api.auth.facebook(token, partnerSlug ? { partnerSlug } : {});
       onLogin(user);
     } catch (err) {
       setError(err.message || 'Facebook sign-in failed.');
@@ -69,16 +86,55 @@ export default function LoginGate({ onLogin, onBack }) {
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!email || !password) { setError('Email and password required.'); return; }
+    if (isSignup && password.length < 8) { setError('Password must be at least 8 characters.'); return; }
     setError('');
     setLoading(true);
     try {
-      const { user } = await api.auth.login(email, password);
-      onLogin(user);
+      if (isSignup) {
+        const res = await api.auth.signup({
+          email, password, displayName: name, companyName: company, partnerSlug,
+        });
+        if (res.verificationRequired) {
+          setMode('sent');
+          setNotice(res.emailSent
+            ? ''
+            : 'We couldn’t send the email just now — use "Resend" in a moment.');
+          return;
+        }
+        onLogin(res.user);
+      } else {
+        const { user } = await api.auth.login(email, password);
+        onLogin(user);
+      }
     } catch (err) {
-      setError(err.message || 'Invalid credentials');
+      setError(err.message || (isSignup ? 'Could not create your account.' : 'Invalid credentials'));
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleResend = async () => {
+    setLoading(true);
+    try {
+      const r = await api.auth.resendVerification(email);
+      setNotice(r.message || 'Link sent.');
+    } catch {
+      setNotice('Could not resend right now. Please try again shortly.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const inputStyle = {
+    width: '100%', padding: '11px 14px', borderRadius: 10,
+    border: `1.5px solid ${C.border}`, fontSize: 14,
+    fontFamily: FONT, outline: 'none', background: C.cardBg, color: C.text,
+  };
+  const focusOn = e => { e.target.style.borderColor = C.purple; e.target.style.boxShadow = '0 0 0 3px rgba(83,74,183,0.12)'; };
+  const focusOff = e => { e.target.style.borderColor = C.border; e.target.style.boxShadow = 'none'; };
+  const labelStyle = {
+    fontSize: 11, fontWeight: 700, color: C.textSecondary,
+    letterSpacing: '0.07em', textTransform: 'uppercase', marginBottom: 6,
   };
 
   return (
@@ -161,7 +217,7 @@ export default function LoginGate({ onLogin, onBack }) {
         animation: 'fadeIn 0.45s ease-out 0.1s both',
       }}>
         <div style={{ width: '100%', maxWidth: 400, animation: 'fadeInUp 0.5s ease-out 0.25s both' }}>
-          {onBack && (
+          {onBack && mode !== 'sent' && (
             <button
               type="button"
               onClick={onBack}
@@ -176,135 +232,194 @@ export default function LoginGate({ onLogin, onBack }) {
               <ArrowLeft size={15} /> Back to home
             </button>
           )}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-            <Lock size={14} color={C.primary} />
-            <span style={{ fontSize: 11, fontWeight: 700, color: C.primary, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
-              Sign In
-            </span>
-          </div>
-          <h2 style={{ fontSize: 26, fontWeight: 700, color: C.text, marginBottom: 8, letterSpacing: '-0.02em' }}>
-            Welcome back
-          </h2>
-          <p style={{ fontSize: 14, color: C.textSecondary, marginBottom: 28, lineHeight: 1.5 }}>
-            Sign in to your {brandName} workspace
-          </p>
 
-          <form onSubmit={handleSubmit}>
-            <label style={{ display: 'block', marginBottom: 18 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: C.textSecondary, letterSpacing: '0.07em', textTransform: 'uppercase', marginBottom: 6 }}>
-                Email
-              </div>
-              <input
-                type="email"
-                placeholder="admin@example.com"
-                value={email}
-                onChange={e => setEmail(e.target.value)}
-                autoFocus
-                style={{
-                  width: '100%', padding: '11px 14px', borderRadius: 10,
-                  border: `1.5px solid ${C.border}`, fontSize: 14,
-                  fontFamily: FONT, outline: 'none', background: C.cardBg, color: C.text,
-                }}
-                onFocus={e => { e.target.style.borderColor = C.purple; e.target.style.boxShadow = `0 0 0 3px rgba(83,74,183,0.12)`; }}
-                onBlur={e => { e.target.style.borderColor = C.border; e.target.style.boxShadow = 'none'; }}
-              />
-            </label>
-
-            <label style={{ display: 'block', marginBottom: 24 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: C.textSecondary, letterSpacing: '0.07em', textTransform: 'uppercase', marginBottom: 6 }}>
-                Password
-              </div>
-              <div style={{ position: 'relative' }}>
-                <input
-                  type={showPw ? 'text' : 'password'}
-                  placeholder="••••••••"
-                  value={password}
-                  onChange={e => setPassword(e.target.value)}
-                  style={{
-                    width: '100%', padding: '11px 38px 11px 14px', borderRadius: 10,
-                    border: `1.5px solid ${C.border}`, fontSize: 14,
-                    fontFamily: FONT, outline: 'none', background: C.cardBg, color: C.text,
-                  }}
-                  onFocus={e => { e.target.style.borderColor = C.purple; e.target.style.boxShadow = `0 0 0 3px rgba(83,74,183,0.12)`; }}
-                  onBlur={e => { e.target.style.borderColor = C.border; e.target.style.boxShadow = 'none'; }}
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPw(v => !v)}
-                  style={{
-                    position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)',
-                    background: 'none', border: 'none', cursor: 'pointer', color: C.textSecondary,
-                    display: 'flex', alignItems: 'center',
-                  }}
-                >
-                  {showPw ? <EyeOff size={16} /> : <Eye size={16} />}
-                </button>
-              </div>
-            </label>
-
-            {error && (
-              <div style={{
-                background: C.primaryLight, color: '#DC2626', borderRadius: 8,
-                padding: '10px 14px', fontSize: 13, marginBottom: 16, fontWeight: 500,
-                animation: 'popIn 0.22s cubic-bezier(0.34,1.56,0.64,1) both',
-              }}>
-                {error}
-              </div>
-            )}
-
-            <button
-              type="submit"
-              disabled={loading}
-              style={{
-                width: '100%', padding: '13px', borderRadius: 10, border: 'none',
-                background: accent,
-                color: '#fff', fontSize: 14, fontWeight: 600,
-                cursor: loading ? 'not-allowed' : 'pointer',
-                opacity: loading ? 0.75 : 1,
-                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-                fontFamily: FONT,
-                boxShadow: loading ? 'none' : '0 2px 12px rgba(0,0,0,0.18)',
-              }}
-              onMouseEnter={e => { if (!loading) { e.currentTarget.style.transform = 'translateY(-1px)'; } }}
-              onMouseLeave={e => { e.currentTarget.style.transform = 'none'; }}
-            >
-              {loading
-                ? <span style={{ display: 'inline-block', width: 16, height: 16, border: '2px solid rgba(255,255,255,0.4)', borderTopColor: '#fff', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
-                : <LogIn size={16} />}
-              {loading ? 'Signing in…' : 'Sign in'}
-            </button>
-          </form>
-
-          {fbEnabled && (
+          {mode === 'sent' ? (
+            <VerificationSent
+              email={email}
+              notice={notice}
+              loading={loading}
+              accent={accent}
+              onResend={handleResend}
+              onBackToSignIn={() => switchMode('signin')}
+            />
+          ) : (
             <>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '22px 0' }}>
-                <div style={{ flex: 1, height: 1, background: C.border }} />
-                <span style={{ fontSize: 11, fontWeight: 600, color: C.textSecondary, letterSpacing: '0.06em', textTransform: 'uppercase' }}>or</span>
-                <div style={{ flex: 1, height: 1, background: C.border }} />
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                {isSignup ? <UserPlus size={14} color={C.primary} /> : <Lock size={14} color={C.primary} />}
+                <span style={{ fontSize: 11, fontWeight: 700, color: C.primary, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+                  {isSignup ? 'Get started' : 'Sign In'}
+                </span>
               </div>
-              <button
-                type="button"
-                onClick={handleFacebook}
-                disabled={fbLoading || loading}
-                style={{
-                  width: '100%', padding: '12px', borderRadius: 10, border: 'none',
-                  background: '#1877f2', color: '#fff', fontSize: 14, fontWeight: 600,
-                  cursor: (fbLoading || loading) ? 'not-allowed' : 'pointer',
-                  opacity: (fbLoading || loading) ? 0.75 : 1,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
-                  fontFamily: FONT,
-                }}
-                onMouseEnter={e => { if (!fbLoading && !loading) e.currentTarget.style.background = '#1668d6'; }}
-                onMouseLeave={e => { e.currentTarget.style.background = '#1877f2'; }}
-              >
-                {fbLoading
-                  ? <span style={{ display: 'inline-block', width: 16, height: 16, border: '2px solid rgba(255,255,255,0.4)', borderTopColor: '#fff', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
-                  : <FacebookGlyph />}
-                {fbLoading ? 'Connecting…' : 'Sign in with Facebook'}
-              </button>
-              <p style={{ fontSize: 11.5, color: C.textMuted, marginTop: 10, textAlign: 'center', lineHeight: 1.5 }}>
-                Works once you’ve connected WhatsApp via Facebook. First time? Sign in above, then connect.
+              <h2 style={{ fontSize: 26, fontWeight: 700, color: C.text, marginBottom: 8, letterSpacing: '-0.02em' }}>
+                {isSignup ? 'Create your workspace' : 'Welcome back'}
+              </h2>
+              <p style={{ fontSize: 14, color: C.textSecondary, marginBottom: 22, lineHeight: 1.5 }}>
+                {isSignup
+                  ? <>Start on the free plan — no card needed. Upgrade whenever you’re ready.</>
+                  : <>Sign in to your {brandName} workspace</>}
               </p>
+
+              {/* Real <button> tabs, not clickable divs: these must be reachable
+                  by keyboard and announced as controls. */}
+              <div role="tablist" aria-label="Sign in or create an account" style={{
+                display: 'flex', gap: 4, padding: 4, marginBottom: 22,
+                background: C.surfaceAlt, borderRadius: 10,
+              }}>
+                {[['signin', 'Sign in'], ['signup', 'Create account']].map(([key, label]) => {
+                  const active = mode === key;
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      role="tab"
+                      aria-selected={active}
+                      onClick={() => switchMode(key)}
+                      style={{
+                        flex: 1, padding: '8px 10px', borderRadius: 7, border: 'none',
+                        cursor: 'pointer', fontFamily: FONT, fontSize: 13, fontWeight: 600,
+                        background: active ? C.cardBg : 'transparent',
+                        color: active ? C.text : C.textSecondary,
+                        boxShadow: active ? '0 1px 4px rgba(0,0,0,0.10)' : 'none',
+                      }}
+                    >{label}</button>
+                  );
+                })}
+              </div>
+
+              <form onSubmit={handleSubmit}>
+                {isSignup && (
+                  <>
+                    <label style={{ display: 'block', marginBottom: 18 }}>
+                      <div style={labelStyle}>Your name</div>
+                      <input
+                        type="text" placeholder="Priya Sharma" value={name}
+                        onChange={e => setName(e.target.value)} autoFocus
+                        style={inputStyle} onFocus={focusOn} onBlur={focusOff}
+                      />
+                    </label>
+                    <label style={{ display: 'block', marginBottom: 18 }}>
+                      <div style={labelStyle}>Company <span style={{ textTransform: 'none', letterSpacing: 0, fontWeight: 500 }}>(optional)</span></div>
+                      <input
+                        type="text" placeholder="Acme Pvt Ltd" value={company}
+                        onChange={e => setCompany(e.target.value)}
+                        style={inputStyle} onFocus={focusOn} onBlur={focusOff}
+                      />
+                    </label>
+                  </>
+                )}
+
+                <label style={{ display: 'block', marginBottom: 18 }}>
+                  <div style={labelStyle}>Email</div>
+                  <input
+                    type="email"
+                    placeholder={isSignup ? 'you@company.com' : 'admin@example.com'}
+                    value={email}
+                    onChange={e => setEmail(e.target.value)}
+                    autoFocus={!isSignup}
+                    style={inputStyle} onFocus={focusOn} onBlur={focusOff}
+                  />
+                </label>
+
+                <label style={{ display: 'block', marginBottom: isSignup ? 20 : 24 }}>
+                  <div style={labelStyle}>Password</div>
+                  <div style={{ position: 'relative' }}>
+                    <input
+                      type={showPw ? 'text' : 'password'}
+                      placeholder="••••••••"
+                      value={password}
+                      onChange={e => setPassword(e.target.value)}
+                      style={{ ...inputStyle, padding: '11px 38px 11px 14px' }}
+                      onFocus={focusOn} onBlur={focusOff}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPw(v => !v)}
+                      aria-label={showPw ? 'Hide password' : 'Show password'}
+                      style={{
+                        position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)',
+                        background: 'none', border: 'none', cursor: 'pointer', color: C.textSecondary,
+                        display: 'flex', alignItems: 'center',
+                      }}
+                    >
+                      {showPw ? <EyeOff size={16} /> : <Eye size={16} />}
+                    </button>
+                  </div>
+                  {isSignup && (
+                    <div style={{ fontSize: 11.5, color: C.textMuted, marginTop: 6 }}>
+                      At least 8 characters.
+                    </div>
+                  )}
+                </label>
+
+                {error && (
+                  <div role="alert" style={{
+                    background: C.primaryLight, color: '#DC2626', borderRadius: 8,
+                    padding: '10px 14px', fontSize: 13, marginBottom: 16, fontWeight: 500,
+                    animation: 'popIn 0.22s cubic-bezier(0.34,1.56,0.64,1) both',
+                  }}>
+                    {error}
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={loading}
+                  style={{
+                    width: '100%', padding: '13px', borderRadius: 10, border: 'none',
+                    background: accent,
+                    color: '#fff', fontSize: 14, fontWeight: 600,
+                    cursor: loading ? 'not-allowed' : 'pointer',
+                    opacity: loading ? 0.75 : 1,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                    fontFamily: FONT,
+                    boxShadow: loading ? 'none' : '0 2px 12px rgba(0,0,0,0.18)',
+                  }}
+                  onMouseEnter={e => { if (!loading) { e.currentTarget.style.transform = 'translateY(-1px)'; } }}
+                  onMouseLeave={e => { e.currentTarget.style.transform = 'none'; }}
+                >
+                  {loading
+                    ? <span style={{ display: 'inline-block', width: 16, height: 16, border: '2px solid rgba(255,255,255,0.4)', borderTopColor: '#fff', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
+                    : (isSignup ? <UserPlus size={16} /> : <LogIn size={16} />)}
+                  {loading
+                    ? (isSignup ? 'Creating…' : 'Signing in…')
+                    : (isSignup ? 'Create account' : 'Sign in')}
+                </button>
+              </form>
+
+              {fbEnabled && (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '22px 0' }}>
+                    <div style={{ flex: 1, height: 1, background: C.border }} />
+                    <span style={{ fontSize: 11, fontWeight: 600, color: C.textSecondary, letterSpacing: '0.06em', textTransform: 'uppercase' }}>or</span>
+                    <div style={{ flex: 1, height: 1, background: C.border }} />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleFacebook}
+                    disabled={fbLoading || loading}
+                    style={{
+                      width: '100%', padding: '12px', borderRadius: 10, border: 'none',
+                      background: '#1877f2', color: '#fff', fontSize: 14, fontWeight: 600,
+                      cursor: (fbLoading || loading) ? 'not-allowed' : 'pointer',
+                      opacity: (fbLoading || loading) ? 0.75 : 1,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
+                      fontFamily: FONT,
+                    }}
+                    onMouseEnter={e => { if (!fbLoading && !loading) e.currentTarget.style.background = '#1668d6'; }}
+                    onMouseLeave={e => { e.currentTarget.style.background = '#1877f2'; }}
+                  >
+                    {fbLoading
+                      ? <span style={{ display: 'inline-block', width: 16, height: 16, border: '2px solid rgba(255,255,255,0.4)', borderTopColor: '#fff', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
+                      : <FacebookGlyph />}
+                    {fbLoading ? 'Connecting…' : (isSignup ? 'Continue with Facebook' : 'Sign in with Facebook')}
+                  </button>
+                  <p style={{ fontSize: 11.5, color: C.textMuted, marginTop: 10, textAlign: 'center', lineHeight: 1.5 }}>
+                    {isSignup
+                      ? 'We’ll create your workspace from your Facebook account — no password to remember.'
+                      : 'New here? Facebook works for signing up too.'}
+                  </p>
+                </>
+              )}
             </>
           )}
         </div>
@@ -316,6 +431,66 @@ export default function LoginGate({ onLogin, onBack }) {
           .login-form-panel  { max-width: 100% !important; padding: 24px !important; }
         }
       `}</style>
+    </div>
+  );
+}
+
+// Shown after signup on an install that CAN send mail. The account exists but is
+// not usable until the link is clicked, so this screen is the whole story — no
+// way forward from here except the inbox.
+function VerificationSent({ email, notice, loading, accent, onResend, onBackToSignIn }) {
+  return (
+    <div style={{ textAlign: 'center' }}>
+      <div style={{
+        width: 56, height: 56, borderRadius: '50%', background: C.primaryLight,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        margin: '0 auto 20px', animation: 'popIn 0.3s cubic-bezier(0.34,1.56,0.64,1) both',
+      }}>
+        <MailCheck size={26} color={accent} />
+      </div>
+      <h2 style={{ fontSize: 24, fontWeight: 700, color: C.text, marginBottom: 10, letterSpacing: '-0.02em' }}>
+        Check your inbox
+      </h2>
+      <p style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.6, marginBottom: 6 }}>
+        We sent a confirmation link to
+      </p>
+      <p style={{ fontSize: 14, fontWeight: 700, color: C.text, marginBottom: 18, wordBreak: 'break-all' }}>
+        {email}
+      </p>
+      <p style={{ fontSize: 13, color: C.textMuted, lineHeight: 1.6, marginBottom: 22 }}>
+        Click it to activate your workspace. The link expires in 24 hours.
+      </p>
+
+      {notice && (
+        <div style={{
+          background: C.surfaceAlt, color: C.textSecondary, borderRadius: 8,
+          padding: '10px 14px', fontSize: 12.5, marginBottom: 16, lineHeight: 1.5,
+        }}>{notice}</div>
+      )}
+
+      <button
+        type="button"
+        onClick={onResend}
+        disabled={loading}
+        style={{
+          width: '100%', padding: '12px', borderRadius: 10,
+          border: `1.5px solid ${C.border}`, background: C.cardBg, color: C.text,
+          fontSize: 14, fontWeight: 600, fontFamily: FONT,
+          cursor: loading ? 'not-allowed' : 'pointer', marginBottom: 12,
+        }}
+      >
+        {loading ? 'Sending…' : 'Resend the link'}
+      </button>
+      <button
+        type="button"
+        onClick={onBackToSignIn}
+        style={{
+          background: 'none', border: 'none', cursor: 'pointer', padding: 4,
+          color: C.textSecondary, fontFamily: FONT, fontSize: 13, fontWeight: 600,
+        }}
+      >
+        Back to sign in
+      </button>
     </div>
   );
 }

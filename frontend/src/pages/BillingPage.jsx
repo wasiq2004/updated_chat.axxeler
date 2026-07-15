@@ -1,9 +1,14 @@
 // Plan & Billing — the tenant's current plan, usage meters, and a plan
-// comparison grid. Read-only (plan changes are made by a super admin); the
-// "upgrade" CTA points users to their account manager for now.
+// comparison grid.
+//
+// Buying: there is no payment gateway, so an admin can't switch their own plan
+// directly. Choosing a plan files a REQUEST that an operator approves once
+// payment is collected out of band. From the customer's side it's a real action
+// with real feedback, not the dead "contact your account manager" text this page
+// used to end on.
 
-import { useState, useEffect } from 'react';
-import { Check, Minus, Crown, TrendingUp, Users, Building2, Contact } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
+import { Check, Minus, Crown, TrendingUp, Users, Building2, Contact, Clock, X } from 'lucide-react';
 import { api } from '../api.js';
 import { C, FONT } from '../constants.js';
 import { PLAN_META, FEATURE_LABELS, formatLimit, fmtMoney } from '../lib/plans.js';
@@ -54,14 +59,50 @@ function UsageMeter({ icon: Icon, label, used, max }) {
   );
 }
 
-export default function BillingPage({ entitlements: initial }) {
+export default function BillingPage({ entitlements: initial, user }) {
   const [ent, setEnt] = useState(initial || null);
   const [loading, setLoading] = useState(!initial);
+  const [request, setRequest] = useState(null);   // the tenant's pending plan request
+  const [busy, setBusy] = useState('');           // plan key currently being submitted
+  const [cycle, setCycle] = useState('monthly');
+  const [err, setErr] = useState('');
 
   useEffect(() => {
     if (initial) { setEnt(initial); return; }
     api.billing.entitlements().then(setEnt).catch(() => {}).finally(() => setLoading(false));
   }, [initial]);
+
+  const reloadRequest = useCallback(() => {
+    api.billing.planRequest().then(r => setRequest(r.request)).catch(() => setRequest(null));
+  }, []);
+  useEffect(() => { reloadRequest(); }, [reloadRequest]);
+
+  // Only a workspace admin can change the plan — the backend enforces this, so
+  // showing the button to anyone else would just produce a 403.
+  const canBuy = !!ent && !ent.isSuperAdmin && user?.role === 'admin';
+
+  const choosePlan = async (planKey) => {
+    setErr('');
+    setBusy(planKey);
+    try {
+      await api.billing.requestPlan(planKey, cycle);
+      reloadRequest();
+    } catch (e) {
+      setErr(e.message || 'Could not submit your request.');
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const withdraw = async () => {
+    setErr('');
+    try {
+      await api.billing.cancelPlanRequest();
+      reloadRequest();
+    } catch (e) {
+      setErr(e.message || 'Could not withdraw the request.');
+    }
+  };
 
   if (loading || !ent) {
     return <div style={{ padding: 40, fontFamily: FONT, color: C.textMuted }}>Loading plan…</div>;
@@ -139,18 +180,91 @@ export default function BillingPage({ entitlements: initial }) {
         </div>
       )}
 
+      {/* A request already in flight. This is the whole feedback loop for the
+          customer, so it says plainly what happens next. */}
+      {request && (
+        <div style={{ ...bannerStyle(C.amber), marginBottom: 22 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <Clock size={20} color={C.amber} />
+            <div>
+              <div style={{ fontSize: 12.5, color: C.amber, fontWeight: 700, marginBottom: 2 }}>Upgrade requested</div>
+              <div style={{ fontSize: 14, fontWeight: 600, color: C.text }}>
+                You asked to move to <strong>{request.planName}</strong> ({request.billingCycle}).
+                We’ll be in touch to arrange payment and activate it.
+              </div>
+            </div>
+          </div>
+          {canBuy && (
+            <button
+              type="button"
+              onClick={withdraw}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+                padding: '8px 14px', borderRadius: 9, cursor: 'pointer',
+                border: `1px solid ${C.border}`, background: C.cardBg,
+                color: C.textSecondary, fontFamily: FONT, fontSize: 12.5, fontWeight: 600,
+              }}
+            >
+              <X size={14} /> Withdraw
+            </button>
+          )}
+        </div>
+      )}
+
+      {err && (
+        <div role="alert" style={{
+          background: C.primaryLight, color: '#DC2626', borderRadius: 10,
+          padding: '10px 14px', fontSize: 13, marginBottom: 16, fontWeight: 500,
+        }}>{err}</div>
+      )}
+
       {/* Plan comparison */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
-        <TrendingUp size={18} color={C.textSecondary} />
-        <h2 style={{ fontSize: 17, fontWeight: 800, margin: 0 }}>Compare plans</h2>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <TrendingUp size={18} color={C.textSecondary} />
+          <h2 style={{ fontSize: 17, fontWeight: 800, margin: 0 }}>Compare plans</h2>
+        </div>
+        {canBuy && (
+          <div role="group" aria-label="Billing cycle" style={{
+            display: 'flex', gap: 3, padding: 3, marginLeft: 'auto',
+            background: C.surfaceAlt, borderRadius: 9,
+          }}>
+            {[['monthly', 'Monthly'], ['yearly', 'Yearly · save 20%']].map(([key, label]) => {
+              const active = cycle === key;
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  aria-pressed={active}
+                  onClick={() => setCycle(key)}
+                  style={{
+                    padding: '6px 12px', borderRadius: 7, border: 'none', cursor: 'pointer',
+                    fontFamily: FONT, fontSize: 12, fontWeight: 700,
+                    background: active ? C.cardBg : 'transparent',
+                    color: active ? C.text : C.textSecondary,
+                    boxShadow: active ? '0 1px 4px rgba(0,0,0,0.10)' : 'none',
+                  }}
+                >{label}</button>
+              );
+            })}
+          </div>
+        )}
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 16 }}>
         {plans.map(p => {
           const m = PLAN_META[p.key] || { label: p.name, tier: 0, accent: C.textSecondary };
           const isCurrent = p.key === currentKey;
           const isUpgrade = !ent.isSuperAdmin && m.tier > currentTier;
-          const price = Number(p.price_monthly);
+          const yearlyTotal = Number(p.price_yearly);
+          // price_yearly is the ANNUAL total; show it per-month so the two
+          // cycles are comparable at a glance rather than 12x apart.
+          const price = cycle === 'yearly' && yearlyTotal > 0
+            ? yearlyTotal / 12
+            : Number(p.price_monthly);
           const feats = Array.isArray(p.features) ? p.features : [];
+          // Enterprise is priced on application — there's nothing to self-serve.
+          const isCustomPriced = p.key === 'enterprise';
+          const requested = request?.planKey === p.key;
           return (
             <div key={p.key} style={{
               position: 'relative', borderRadius: 18, padding: 22,
@@ -170,7 +284,7 @@ export default function BillingPage({ entitlements: initial }) {
               <div style={{ fontSize: 16, fontWeight: 800, color: m.accent }}>{m.label}</div>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 4, margin: '8px 0 4px' }}>
                 <span style={{ fontSize: 28, fontWeight: 800, letterSpacing: '-0.02em' }}>
-                  {price === 0 ? (p.key === 'enterprise' ? 'Custom' : 'Free') : fmtMoney(price, p.currency)}
+                  {price === 0 ? (isCustomPriced ? 'Custom' : 'Free') : fmtMoney(Math.round(price), p.currency)}
                 </span>
                 {price > 0 && <span style={{ fontSize: 12.5, color: C.textMuted, fontWeight: 600 }}>/mo</span>}
               </div>
@@ -196,10 +310,33 @@ export default function BillingPage({ entitlements: initial }) {
                 })}
               </div>
 
-              {isUpgrade && (
-                <div style={{ marginTop: 16, fontSize: 11.5, color: C.textMuted, textAlign: 'center' }}>
-                  Contact your account manager to upgrade
-                </div>
+              {canBuy && !isCurrent && (
+                isCustomPriced ? (
+                  <div style={{ marginTop: 16, fontSize: 11.5, color: C.textMuted, textAlign: 'center', lineHeight: 1.5 }}>
+                    Priced to fit — talk to us about Enterprise.
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={!!busy || requested}
+                    onClick={() => choosePlan(p.key)}
+                    style={{
+                      width: '100%', marginTop: 16, padding: '11px', borderRadius: 10,
+                      border: requested ? `1.5px solid ${C.border}` : 'none',
+                      background: requested ? C.cardBg : m.accent,
+                      color: requested ? C.textSecondary : '#fff',
+                      fontSize: 13.5, fontWeight: 700, fontFamily: FONT,
+                      cursor: (busy || requested) ? 'default' : 'pointer',
+                      opacity: busy === p.key ? 0.7 : 1,
+                    }}
+                  >
+                    {requested
+                      ? 'Requested'
+                      : busy === p.key
+                        ? 'Sending…'
+                        : isUpgrade ? `Upgrade to ${m.label}` : `Switch to ${m.label}`}
+                  </button>
+                )
               )}
             </div>
           );

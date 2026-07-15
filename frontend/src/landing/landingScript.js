@@ -123,9 +123,13 @@ export function initLanding(root, { onGetStarted, onNavigate } = {}) {
     // primary CTA appears both as href="#" (pricing cards) and href="#pricing"
     // (header + hero). Every "Start Free" / "Log in" must reach the app, so the
     // href it happens to carry must not decide the behaviour.
+    //
+    // The label also decides WHICH form opens: "Start Free" is a request to
+    // create an account, so it must not land on a sign-in form the visitor has
+    // no credentials for.
     if (label === 'log in' || label === 'start free') {
       e.preventDefault();
-      onGetStarted?.();
+      onGetStarted?.(label === 'log in' ? 'login' : 'signup');
       return;
     }
 

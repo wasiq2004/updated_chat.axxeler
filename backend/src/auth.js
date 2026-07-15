@@ -1,10 +1,14 @@
 const { Router } = require('express');
+const rateLimit = require('express-rate-limit');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const pool = require('./db');
 const { effectivePages } = require('./permissions');
 const { isStrong } = require('./util/instanceSecrets');
 const facebookAuth = require('./services/facebookAuth');
+const { createWorkspace, emailTaken } = require('./services/signup');
+const verification = require('./services/emailVerification');
+const { auditLog } = require('./middleware/access');
 
 async function loadUserSession(userId) {
   const { rows } = await pool.query(
@@ -71,6 +75,34 @@ const COOKIE_NAME = 'z_chat_token';
 const TOKEN_EXPIRY = '24h';
 
 const router = Router();
+
+// May this account sign in, verification-wise? Only self-serve signups are ever
+// gated, and only while a mailer exists to send the link:
+//   * operator-provisioned accounts ('invite') are vouched for by the operator;
+//   * every pre-existing account was backfilled as verified by migration 074;
+//   * with no SMTP configured, signup verifies on creation (see
+//     services/emailVerification) — so this stays false there too.
+// Tolerates the column being absent (pre-migration boot): undefined -> verified.
+function isVerified(user) {
+  if (!verification.verificationRequired()) return true;
+  if (user.signup_source && user.signup_source !== 'self_serve') return true;
+  if (user.email_verified_at === undefined) return true;
+  return user.email_verified_at != null;
+}
+
+// Account creation is the most abusable public surface here: it writes a tenant,
+// an org, a user and a subscription, and sends mail. The global limiter
+// (600/min) is nowhere near tight enough, so signup gets its own IP bucket.
+const signupLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.ip,
+  handler: (req, res) => res.status(429).json({
+    error: 'Too many signup attempts from this network. Please try again later.',
+  }),
+});
 
 // Ensure tables exist on startup
 async function ensureTables() {
@@ -196,6 +228,12 @@ router.post('/auth/login', async (req, res) => {
     if (user.is_active === false) {
       return res.status(403).json({ error: 'Account is disabled. Contact an administrator.' });
     }
+    if (!isVerified(user)) {
+      return res.status(403).json({
+        error: 'Please confirm your email address first. Check your inbox for the link.',
+        code: 'EMAIL_NOT_VERIFIED',
+      });
+    }
     const token = signToken(user);
     setAuthCookie(res, token);
     // Best-effort: stamp last_login_at; don't fail login if this errors.
@@ -227,12 +265,7 @@ router.post('/auth/facebook', async (req, res) => {
       [fbUserId]
     );
     const user = rows[0];
-    if (!user) {
-      return res.status(401).json({
-        error: 'This Facebook account isn’t linked yet. Sign in with your email and password, then connect WhatsApp via Facebook.',
-        code: 'FB_NOT_LINKED',
-      });
-    }
+    if (!user) return signUpWithFacebook(req, res, { fbUserId, accessToken });
     if (user.is_active === false) {
       return res.status(403).json({ error: 'Account is disabled. Contact an administrator.' });
     }
@@ -243,9 +276,78 @@ router.post('/auth/facebook', async (req, res) => {
     res.json({ user: session });
   } catch (err) {
     console.error('[auth] facebook login error:', err.message);
-    res.status(401).json({ error: 'Facebook sign-in failed. Please try again or use email and password.' });
+    // The signup branch answers for itself (including its own failures); only
+    // speak here if nothing has been sent, or Express logs a double-send.
+    if (!res.headersSent) {
+      res.status(401).json({ error: 'Facebook sign-in failed. Please try again or use email and password.' });
+    }
   }
 });
+
+// An unrecognised Facebook identity creates a workspace, the same as an email
+// signup. Called only from POST /auth/facebook, after the token has been
+// verified server-side — never trust a client-supplied Facebook id.
+async function signUpWithFacebook(req, res, { fbUserId, accessToken }) {
+  const profile = await facebookAuth.fetchProfile(accessToken);
+  const email = String(profile.email || '').trim().toLowerCase();
+  if (!email) {
+    return res.status(400).json({
+      error: 'Facebook didn’t share an email address with us, so we can’t create your account. Please sign up with your email instead.',
+      code: 'FB_NO_EMAIL',
+    });
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    if (await emailTaken(client, email)) {
+      await client.query('ROLLBACK');
+      // Deliberately NOT auto-linking to the existing account. Adopting an
+      // account because Facebook asserts the same address is an account-takeover
+      // path; linking stays an authenticated action (connect WhatsApp while
+      // signed in), which is how fb_user_id gets set today.
+      return res.status(409).json({
+        error: 'An account already uses this email. Sign in with your password, then connect Facebook from inside the app.',
+        code: 'FB_EMAIL_TAKEN',
+      });
+    }
+    const ws = await createWorkspace(client, {
+      email,
+      password: null,                    // Facebook is the credential
+      displayName: profile.name,
+      companyName: req.body?.companyName,
+      partnerSlug: req.body?.partnerSlug || null,
+      fbUserId,
+      source: 'facebook',
+    });
+    // No verification link: Facebook already vouches for the address, and the
+    // person is standing right here having just authenticated with Meta.
+    await client.query(
+      'UPDATE coexistence.z_chat_users SET email_verified_at = NOW() WHERE id = $1',
+      [ws.userId]
+    );
+    await client.query('COMMIT');
+
+    auditLog({
+      actor: { id: ws.userId, username: ws.username },
+      action: 'tenant.signup',
+      targetType: 'tenant',
+      targetId: ws.tenantId,
+      payload: { source: 'facebook', resellerId: ws.resellerId },
+      tenantId: ws.tenantId,
+      from: req,
+    });
+
+    setAuthCookie(res, signToken({ id: ws.userId, username: ws.username, display_name: profile.name, role: 'admin' }));
+    const session = await loadUserSession(ws.userId);
+    return res.status(201).json({ user: session, created: true });
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch { /* ignore */ }
+    console.error('[auth] facebook signup error:', err.message);
+    return res.status(500).json({ error: 'Could not create your account. Please try again.' });
+  } finally {
+    client.release();
+  }
+}
 
 // GET /api/auth/me
 router.get('/auth/me', authMiddleware, async (req, res) => {
@@ -334,6 +436,164 @@ router.post('/auth/setup', async (req, res) => {
     client.release();
   }
 });
+
+// POST /api/auth/signup — public. Self-serve workspace creation.
+// Body: { email, password, displayName, companyName, partnerSlug? }
+// `partnerSlug` is the ?w=<slug> the visitor arrived with: it attributes the new
+// tenant to that partner, so the customer shows up in the partner's console and
+// gets the partner's plan catalog. An unknown slug degrades to platform-direct.
+router.post('/auth/signup', signupLimiter, async (req, res) => {
+  const b = req.body || {};
+  const email = String(b.email || '').trim().toLowerCase();
+  const password = String(b.password || '');
+  if (!email || !password) return res.status(400).json({ error: 'Email and password are required' });
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: 'Enter a valid email address' });
+  if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
+
+  // The very first account must go through the setup wizard, which mints the
+  // instance owner. Letting signup win that race would leave the install with no
+  // super admin.
+  try {
+    const { rows } = await pool.query('SELECT COUNT(*)::int AS n FROM coexistence.z_chat_users');
+    if (rows[0].n === 0) return res.status(409).json({ error: 'This instance is not set up yet.' });
+  } catch {
+    return res.status(503).json({ error: 'Service starting' });
+  }
+
+  // Up to 3 attempts: username/tenant-slug are globally unique and derived, so a
+  // concurrent signup can lose a race. A duplicate EMAIL is checked first and
+  // returns 409 without retrying — that is a real conflict, not a race.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      if (await emailTaken(client, email)) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: 'An account with this email already exists. Try signing in.' });
+      }
+      const ws = await createWorkspace(client, {
+        email,
+        password,
+        displayName: b.displayName,
+        companyName: b.companyName,
+        partnerSlug: b.partnerSlug || null,
+        source: 'self_serve',
+      });
+      const mustVerify = verification.verificationRequired();
+      const rawToken = mustVerify ? await verification.issueToken(client, ws.userId) : null;
+      if (!mustVerify) {
+        await client.query(
+          `UPDATE coexistence.z_chat_users SET email_verified_at = NOW() WHERE id = $1`,
+          [ws.userId]
+        );
+      }
+      await client.query('COMMIT');
+
+      auditLog({
+        actor: { id: ws.userId, username: ws.username },
+        action: 'tenant.signup',
+        targetType: 'tenant',
+        targetId: ws.tenantId,
+        payload: { source: 'self_serve', resellerId: ws.resellerId },
+        tenantId: ws.tenantId,
+        from: req,
+      });
+
+      if (mustVerify) {
+        // Delivery is best-effort and deliberately outside the transaction: a
+        // dead SMTP host must not destroy an account that was already created.
+        // They can always ask for a new link.
+        const brandName = await brandNameFor(ws.resellerId);
+        const sent = await verification.sendVerificationEmail({ to: email, token: rawToken, brandName });
+        if (!sent.ok) console.error('[auth] verification email failed:', sent.error);
+        return res.status(201).json({ verificationRequired: true, email, emailSent: !!sent.ok });
+      }
+
+      const session = await loadUserSession(ws.userId);
+      setAuthCookie(res, signToken({ id: ws.userId, username: ws.username, display_name: b.displayName, role: 'admin' }));
+      return res.status(201).json({ user: session, verificationRequired: false });
+    } catch (err) {
+      try { await client.query('ROLLBACK'); } catch { /* ignore */ }
+      if (err && err.code === '23505' && attempt < 2) continue; // lost a race — rebuild and retry
+      console.error('[auth] signup error:', err.message);
+      return res.status(500).json({ error: 'Could not create your account. Please try again.' });
+    } finally {
+      client.release();
+    }
+  }
+  return res.status(500).json({ error: 'Could not create your account. Please try again.' });
+});
+
+// POST /api/auth/verify-email — public. Body: { token }. Consumes the emailed
+// token and signs the person straight in, so the link lands them in the app.
+router.post('/auth/verify-email', async (req, res) => {
+  const { token } = req.body || {};
+  const result = await verification.consumeToken(token);
+  if (!result.ok) {
+    return res.status(400).json({
+      error: 'This confirmation link is invalid or has expired. Request a new one.',
+      code: 'VERIFY_INVALID',
+    });
+  }
+  try {
+    const { rows } = await pool.query(
+      'SELECT id, username, display_name, role, is_active FROM coexistence.z_chat_users WHERE id = $1',
+      [result.userId]
+    );
+    const user = rows[0];
+    if (!user || user.is_active === false) return res.status(403).json({ error: 'Account is disabled.' });
+    setAuthCookie(res, signToken(user));
+    pool.query('UPDATE coexistence.z_chat_users SET last_login_at = NOW() WHERE id = $1', [user.id]).catch(() => {});
+    const session = await loadUserSession(user.id);
+    res.json({ user: session });
+  } catch (err) {
+    console.error('[auth] verify-email error:', err.message);
+    res.status(500).json({ error: 'Verification failed' });
+  }
+});
+
+// POST /api/auth/resend-verification — public. Body: { email }.
+// Always reports success: a differing response would let anyone probe which
+// addresses have accounts.
+router.post('/auth/resend-verification', signupLimiter, async (req, res) => {
+  const email = String((req.body || {}).email || '').trim().toLowerCase();
+  const ok = { ok: true, message: 'If that account needs confirming, we\'ve sent a new link.' };
+  if (!email || !verification.verificationRequired()) return res.json(ok);
+  const client = await pool.connect();
+  try {
+    const { rows } = await client.query(
+      `SELECT u.id, u.email, t.reseller_id
+         FROM coexistence.z_chat_users u
+         LEFT JOIN coexistence.tenants t ON t.id = u.tenant_id
+        WHERE u.email = $1 AND u.email_verified_at IS NULL AND u.signup_source = 'self_serve'`,
+      [email]
+    );
+    if (!rows.length) return res.json(ok);
+    await client.query('BEGIN');
+    const raw = await verification.issueToken(client, rows[0].id);
+    await client.query('COMMIT');
+    const brandName = await brandNameFor(rows[0].reseller_id);
+    await verification.sendVerificationEmail({ to: rows[0].email, token: raw, brandName });
+    res.json(ok);
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch { /* ignore */ }
+    console.error('[auth] resend-verification error:', err.message);
+    res.json(ok);
+  } finally {
+    client.release();
+  }
+});
+
+// The name to put in outbound mail: a partner's customer must never receive an
+// email branded "Zen Chat". Falls back to our own name for platform-direct.
+async function brandNameFor(resellerId) {
+  if (!resellerId) return 'Zen Chat';
+  try {
+    const { rows } = await pool.query('SELECT name, branding FROM coexistence.resellers WHERE id = $1', [resellerId]);
+    if (!rows.length) return 'Zen Chat';
+    return rows[0].branding?.brandName || rows[0].name || 'Zen Chat';
+  } catch { return 'Zen Chat'; }
+}
 
 // Verify a raw JWT and return its payload, or null if missing/invalid/expired.
 // Exposed so other modules (e.g. the rate limiter) can derive a *trusted* user
