@@ -432,6 +432,10 @@ export const api = {
     tenant: (id) => req(`/platform/tenants/${id}`),
     createTenant: (data) => req('/platform/tenants', { method: 'POST', body: JSON.stringify(data) }),
     updateTenant: (id, data) => req(`/platform/tenants/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+    // Soft-delete an admin (workspace): hides it and disables its logins. Their
+    // conversations and contacts are kept — ~30 tables cascade off tenants(id),
+    // so this is never a hard delete.
+    deleteTenant: (id) => req(`/platform/tenants/${id}`, { method: 'DELETE' }),
     setSubscription: (id, data) => req(`/platform/tenants/${id}/subscription`, { method: 'POST', body: JSON.stringify(data) }),
     renew: (id, months = 1) => req(`/platform/tenants/${id}/renew`, { method: 'POST', body: JSON.stringify({ months }) }),
     updateUser: (userId, data) => req(`/platform/users/${userId}`, { method: 'PATCH', body: JSON.stringify(data) }),

@@ -93,12 +93,15 @@ function isVerified(user) {
 // Account creation is the most abusable public surface here: it writes a tenant,
 // an org, a user and a subscription, and sends mail. The global limiter
 // (600/min) is nowhere near tight enough, so signup gets its own IP bucket.
+// No custom keyGenerator on purpose: the default already buckets by IP AND
+// normalises IPv6 (a bare `req.ip` key lets an IPv6 client mint a fresh bucket
+// per address from their /64 and walk straight through the cap —
+// express-rate-limit flags this as ERR_ERL_KEY_GEN_IPV6).
 const signupLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   limit: 10,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => req.ip,
   handler: (req, res) => res.status(429).json({
     error: 'Too many signup attempts from this network. Please try again later.',
   }),

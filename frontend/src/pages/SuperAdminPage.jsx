@@ -771,8 +771,11 @@ function Admins({ isSuper }) {
   const { data: plans } = useAsync(() => api.platform.plans(), []);
   const [showCreate, setShowCreate] = useState(false);
   const [detailFor, setDetailFor] = useState(null); // tenant id open in the drill-down
+  const [pendingDelete, setPendingDelete] = useState(null);
 
-  if (loading) return <Muted>Loading…</Muted>;
+  // `loading && !data` (not bare `loading`): a reload after a delete must not
+  // unmount the table and any dialog mounted beside it.
+  if (loading && !data) return <Muted>Loading…</Muted>;
   if (error) return <ErrorBox msg={error} />;
 
   return (
@@ -806,10 +809,22 @@ function Admins({ isSuper }) {
                 <td style={{ padding: '11px 14px' }}>{t.organizations}</td>
                 <td style={{ padding: '11px 14px' }}>{t.users}</td>
                 <td style={{ padding: '11px 14px', textAlign: 'right', whiteSpace: 'nowrap' }}>
-                  <button style={{ ...btn, padding: '5px 10px', fontSize: 12.5 }}
-                    onClick={(e) => { e.stopPropagation(); setDetailFor(t.id); }}>
-                    Manage →
-                  </button>
+                  {/* stopPropagation on both: the whole row opens the drill-down,
+                      so without it a delete click also fires that. */}
+                  <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                    <button style={{ ...btn, padding: '5px 10px', fontSize: 12.5 }}
+                      onClick={(e) => { e.stopPropagation(); setDetailFor(t.id); }}>
+                      Manage →
+                    </button>
+                    <button
+                      title="Delete admin"
+                      aria-label={`Delete ${t.name}`}
+                      style={{ ...btn, padding: '5px 9px', color: '#DC2626' }}
+                      onClick={(e) => { e.stopPropagation(); setPendingDelete(t); }}
+                    >
+                      <Trash2 size={14} style={{ verticalAlign: '-2px' }} />
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
@@ -822,7 +837,85 @@ function Admins({ isSuper }) {
       {detailFor && (
         <AdminDetail tenantId={detailFor} plans={plans || []} isSuper={isSuper} onClose={() => setDetailFor(null)} onChanged={reload} />
       )}
+      {pendingDelete && (
+        <DeleteAdmin
+          admin={pendingDelete}
+          onClose={() => setPendingDelete(null)}
+          onDeleted={() => { setPendingDelete(null); reload(); }}
+        />
+      )}
     </div>
+  );
+}
+
+// ─── Delete admin (workspace) ────────────────────────────────────────────────
+// Soft delete: the workspace disappears from the console and its people can no
+// longer sign in, but nothing is destroyed. The dialog says so explicitly —
+// "delete" that silently shredded a customer's entire chat history would be a
+// nasty surprise, and this one genuinely doesn't.
+function DeleteAdmin({ admin, onClose, onDeleted }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const [confirm, setConfirm] = useState('');
+  // Typing the name is required because, unlike the partner delete, there is no
+  // child-count guard to catch a misclick: any workspace can be deleted at any
+  // time, including a busy one with live conversations.
+  const matches = confirm.trim().toLowerCase() === admin.name.trim().toLowerCase();
+
+  async function go() {
+    if (!matches) return;
+    setBusy(true); setErr(null);
+    try { await api.platform.deleteTenant(admin.id); onDeleted(); }
+    catch (e) { setErr(e.message); setBusy(false); }
+  }
+
+  return (
+    <Modal onClose={onClose} title={`Delete “${admin.name}”?`}>
+      {err && <ErrorBox msg={err} />}
+      <div style={{ fontSize: 13, color: C.textSecondary, lineHeight: 1.6 }}>
+        Their workspace is removed from this console and all <b>{admin.users}</b> of their
+        logins stop working immediately. Their subscription is cancelled and any pending
+        plan request is withdrawn.
+      </div>
+      <div style={{
+        marginTop: 12, padding: '10px 12px', borderRadius: 8, fontSize: 12.5, lineHeight: 1.55,
+        background: 'rgba(17,131,180,.10)', color: C.textSecondary, border: `1px solid ${C.border}`,
+      }}>
+        Conversations, contacts and connected WhatsApp numbers are <b>kept</b>, not destroyed —
+        this is reversible in the database. Their email addresses are released, so they can
+        sign up again later.
+      </div>
+      {admin.users > 1 && (
+        <div style={{
+          marginTop: 12, padding: '10px 12px', borderRadius: 8, fontSize: 12.5, lineHeight: 1.55,
+          background: 'rgba(245,158,11,.12)', color: '#B45309', border: '1px solid rgba(245,158,11,.3)',
+        }}>
+          This locks out <b>{admin.users}</b> people, not just the owner.
+        </div>
+      )}
+      <label style={{ display: 'block', marginTop: 16 }}>
+        <div style={{ fontSize: 12, fontWeight: 600, color: C.textSecondary, marginBottom: 6 }}>
+          Type <b style={{ color: C.text }}>{admin.name}</b> to confirm
+        </div>
+        <input
+          style={{ ...inputStyle, width: '100%' }}
+          value={confirm}
+          onChange={e => setConfirm(e.target.value)}
+          placeholder={admin.name}
+          autoFocus
+        />
+      </label>
+      <div style={{ marginTop: 16, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+        <button style={btn} onClick={onClose} disabled={busy}>Cancel</button>
+        <button
+          style={{ ...btnPrimary, background: '#DC2626', opacity: matches ? 1 : 0.5 }}
+          disabled={busy || !matches}
+          onClick={go}
+        >
+          {busy ? 'Deleting…' : 'Delete admin'}
+        </button>
+      </div>
+    </Modal>
   );
 }
 

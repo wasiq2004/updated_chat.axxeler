@@ -4,11 +4,15 @@ const LOGIN_EMAIL = 'admin@example.com';
 const LOGIN_PASSWORD = 'admin123';
 
 async function login(page) {
-  await page.goto('/');
+  // '/#/login', not '/': a logged-out visitor now lands on the marketing page,
+  // which has no email field. The login form is one CTA click further in.
+  await page.goto('/#/login');
   await page.waitForSelector('input[type="email"]', { timeout: 10000 });
   await page.fill('input[type="email"]', LOGIN_EMAIL);
   await page.fill('input[type="password"]', LOGIN_PASSWORD);
-  await page.click('button:has-text("Sign in")');
+  // Scoped to the submit button: "Sign in" is also the label of the mode tab
+  // beside it, and a bare text match is ambiguous between the two.
+  await page.click('button[type="submit"]:has-text("Sign in")');
   // Wait for the dashboard to load
   await page.waitForSelector('text=Zen Chat', { timeout: 15000 });
 }

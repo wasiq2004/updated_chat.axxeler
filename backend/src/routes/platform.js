@@ -503,6 +503,81 @@ router.patch('/platform/tenants/:id', async (req, res) => {
   }
 });
 
+// Delete an admin (a customer workspace). SOFT delete (tenants.deleted_at) —
+// deliberately, and not negotiable: ~30 tables reference tenants(id) ON DELETE
+// CASCADE, including chat_history, contacts and whatsapp_accounts. A hard DELETE
+// would irrecoverably destroy every conversation the customer ever had. Soft
+// delete hides the workspace everywhere (every tenant query already filters
+// `deleted_at IS NULL`) and disables its logins, while leaving the data intact.
+//
+// Scoped by scopeId(req), like the other tenant routes: a partner can delete
+// their own admins — which is also how they clear the blocker on deleting the
+// partner itself. The platform owner can only delete platform-direct ones.
+router.delete('/platform/tenants/:id', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { rows: found } = await client.query(
+      `SELECT id, name FROM coexistence.tenants
+        WHERE id = $1 AND deleted_at IS NULL AND reseller_id IS NOT DISTINCT FROM $2`,
+      [req.params.id, scopeId(req)]
+    );
+    if (!found.length) return res.status(404).json({ error: 'Admin not found' });
+
+    await client.query('BEGIN');
+    await client.query(
+      `UPDATE coexistence.tenants
+          SET deleted_at = NOW(), status = 'cancelled', updated_at = NOW()
+        WHERE id = $1`,
+      [req.params.id]
+    );
+    // Stop billing them. The unique partial index idx_subscriptions_one_live
+    // only tolerates one live row per tenant, so leaving an 'active' one behind
+    // would also block a future re-create on the same tenant id.
+    await client.query(
+      `UPDATE coexistence.subscriptions SET status = 'cancelled', updated_at = NOW()
+        WHERE tenant_id = $1 AND status IN ('active','trialing','past_due','suspended')`,
+      [req.params.id]
+    );
+    // Withdraw anything still queued for an operator to action.
+    await client.query(
+      `UPDATE coexistence.plan_requests SET status = 'cancelled', updated_at = NOW()
+        WHERE tenant_id = $1 AND status = 'pending'`,
+      [req.params.id]
+    );
+    // Their logins must stop working now — deleted_at on the tenant alone does
+    // not block a session (authMiddleware re-checks the USER, not the tenant).
+    //
+    // Release the email + username too, same as the partner delete: the row is
+    // kept (audit rows and created_by point at it), but a deleted workspace must
+    // not hold an address hostage — otherwise that person can never sign up
+    // again with their own email, which self-serve signup makes very likely.
+    const { rowCount: disabled } = await client.query(
+      `UPDATE coexistence.z_chat_users
+          SET is_active = FALSE,
+              email     = email    || '+deleted' || id,
+              username  = username || '+deleted' || id,
+              updated_at = NOW()
+        WHERE tenant_id = $1
+          AND email NOT LIKE '%+deleted%'`,
+      [req.params.id]
+    );
+    await client.query('COMMIT');
+
+    await auditLog({
+      actor: req.user, action: 'platform.tenant.delete',
+      targetType: 'tenant', targetId: req.params.id, tenantId: Number(req.params.id),
+      payload: { ip: clientIp(req), name: found[0].name, disabledLogins: disabled },
+    });
+    res.json({ ok: true, disabledLogins: disabled });
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch { /* ignore */ }
+    console.error('[platform] delete tenant error:', err.message);
+    res.status(500).json({ error: 'Failed to delete admin' });
+  } finally {
+    client.release();
+  }
+});
+
 // Change a tenant's plan (creates a new active subscription, retires the old).
 router.post('/platform/tenants/:id/subscription', async (req, res) => {
   const { planKey, billingCycle = 'monthly' } = req.body || {};
