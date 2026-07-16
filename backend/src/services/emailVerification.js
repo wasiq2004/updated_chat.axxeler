@@ -83,6 +83,24 @@ async function sendResetEmail({ to, token, brandName = 'Zen Chat' }) {
   return sendMail({ to, subject: `Reset your ${brandName} password`, text });
 }
 
+// Remember whether the last verification email actually got out. Best-effort —
+// this is bookkeeping for the operator console; failing to write it must never
+// break a signup that already succeeded.
+async function recordSendResult(userId, sent) {
+  try {
+    await pool.query(
+      `UPDATE coexistence.z_chat_users
+          SET verification_sent_at = NOW(),
+              verification_error = $2,
+              updated_at = NOW()
+        WHERE id = $1`,
+      [userId, sent?.ok ? null : String(sent?.error || 'Unknown mailer error').slice(0, 500)]
+    );
+  } catch (err) {
+    console.error('[verify] could not record send result:', err.message);
+  }
+}
+
 // Consume a token and mark the user verified. Returns { ok, userId } or
 // { ok:false, reason }. Single-use: the UPDATE ... WHERE consumed_at IS NULL
 // makes a double-click of the emailed link a no-op rather than an error path.
@@ -126,5 +144,5 @@ async function consumeToken(raw, purpose = 'verify') {
 
 module.exports = {
   verificationRequired, issueToken, sendVerificationEmail, sendResetEmail,
-  consumeToken, appUrl, hashToken,
+  consumeToken, recordSendResult, appUrl, hashToken,
 };

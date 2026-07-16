@@ -721,6 +721,85 @@ router.post('/platform/tenants/:id/subscription', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Unverified signups — the operator side of a broken mailer.
+//
+// When SMTP is configured the verification gate is ON. If the mailer then fails
+// (rejected key, unverified sender domain), the person is created and stranded:
+// they cannot log in, and "resend" fails the same way. That used to be invisible
+// — a log line and nothing else. These two routes make it a support task.
+// ---------------------------------------------------------------------------
+
+// GET /platform/signups — self-serve accounts that never confirmed their email.
+router.get('/platform/signups', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT u.id, u.email, u.display_name, u.created_at,
+              u.verification_sent_at, u.verification_error,
+              t.id AS tenant_id, t.name AS tenant_name
+         FROM coexistence.z_chat_users u
+         LEFT JOIN coexistence.tenants t ON t.id = u.tenant_id
+        WHERE u.email_verified_at IS NULL
+          AND u.signup_source = 'self_serve'
+          AND u.is_active = TRUE
+          AND (t.id IS NULL OR t.deleted_at IS NULL)
+          AND t.reseller_id IS NOT DISTINCT FROM $1
+        ORDER BY u.created_at DESC
+        LIMIT 200`,
+      [scopeId(req)]
+    );
+    res.json(rows.map(r => ({
+      id: r.id,
+      email: r.email,
+      name: r.display_name,
+      createdAt: r.created_at,
+      sentAt: r.verification_sent_at,
+      // Non-null means WE failed to deliver, not that they ignored it — the
+      // distinction decides whether this is your problem or theirs.
+      error: r.verification_error,
+      tenant: r.tenant_id ? { id: r.tenant_id, name: r.tenant_name } : null,
+    })));
+  } catch (err) {
+    console.error('[platform] signups list error:', err.message);
+    res.status(500).json({ error: 'Failed to list unverified signups' });
+  }
+});
+
+// POST /platform/users/:id/verify-email — confirm an address by hand.
+//
+// Deliberately scoped and audited: this bypasses proof that the person controls
+// the address, so it must be attributable. Only reachable for a self-serve
+// signup inside the operator's own hierarchy.
+router.post('/platform/users/:id/verify-email', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `UPDATE coexistence.z_chat_users u
+          SET email_verified_at = NOW(),
+              verified_by = $1,
+              verification_error = NULL,
+              updated_at = NOW()
+         FROM coexistence.tenants t
+        WHERE u.tenant_id = t.id
+          AND u.id = $2
+          AND u.email_verified_at IS NULL
+          AND t.deleted_at IS NULL
+          AND t.reseller_id IS NOT DISTINCT FROM $3
+        RETURNING u.email`,
+      [req.user.id, req.params.id, scopeId(req)]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'No unverified signup with that id' });
+    await auditLog({
+      actor: req.user, action: 'platform.user.verify_email',
+      targetType: 'user', targetId: req.params.id,
+      payload: { email: rows[0].email, ip: clientIp(req) },
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[platform] manual verify error:', err.message);
+    res.status(500).json({ error: 'Failed to verify this account' });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Plan requests — the operator side of self-serve "purchase".
 //
 // A customer picks a paid plan; because there is no payment gateway, that lands

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Lock, LogIn, Eye, EyeOff, ArrowLeft, UserPlus, MailCheck } from 'lucide-react';
+import { Lock, LogIn, Eye, EyeOff, ArrowLeft, UserPlus, MailCheck, AlertTriangle } from 'lucide-react';
 import { api } from '../api.js';
 import { C, FONT } from '../constants.js';
 import { loadFacebookSdk, fbLogin } from '../lib/facebook.js';
@@ -30,6 +30,7 @@ export default function LoginGate({ onLogin, onBack, initialMode = 'signin' }) {
   const [agreed, setAgreed] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [sendFailed, setSendFailed] = useState(false);
   const [loading, setLoading] = useState(false);
   const [brand, setBrand] = useState(null); // partner white-label branding
   const [fbEnabled, setFbEnabled] = useState(false);
@@ -99,9 +100,11 @@ export default function LoginGate({ onLogin, onBack, initialMode = 'signin' }) {
         });
         if (res.verificationRequired) {
           setMode('sent');
-          setNotice(res.emailSent
-            ? ''
-            : 'We couldn’t send the email just now — use "Resend" in a moment.');
+          // emailSent === false means the mailer REJECTED it — retrying will
+          // fail identically. Telling them to press Resend would send them in a
+          // loop; their account exists and only an operator can release it.
+          setSendFailed(res.emailSent === false);
+          setNotice('');
           return;
         }
         onLogin(res.user);
@@ -259,6 +262,8 @@ export default function LoginGate({ onLogin, onBack, initialMode = 'signin' }) {
               notice={notice}
               loading={loading}
               accent={accent}
+              sendFailed={sendFailed}
+              brandName={brandName}
               onResend={handleResend}
               onBackToSignIn={() => switchMode('signin')}
             />
@@ -512,7 +517,54 @@ export default function LoginGate({ onLogin, onBack, initialMode = 'signin' }) {
 // Shown after signup on an install that CAN send mail. The account exists but is
 // not usable until the link is clicked, so this screen is the whole story — no
 // way forward from here except the inbox.
-function VerificationSent({ email, notice, loading, accent, onResend, onBackToSignIn }) {
+function VerificationSent({ email, notice, loading, accent, sendFailed, brandName, onResend, onBackToSignIn }) {
+  // The mailer REJECTED the send. The account exists but is unreachable, and
+  // pressing Resend repeats the identical failure — so don't offer it, and don't
+  // tell them to watch an inbox nothing is coming to. Say what actually happened
+  // and whose problem it is.
+  if (sendFailed) {
+    return (
+      <div style={{ textAlign: 'center' }}>
+        <div style={{
+          width: 56, height: 56, borderRadius: '50%', background: 'rgba(245,158,11,.14)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          margin: '0 auto 20px', animation: 'popIn 0.3s cubic-bezier(0.34,1.56,0.64,1) both',
+        }}>
+          <AlertTriangle size={26} color="#B45309" />
+        </div>
+        <h2 style={{ fontSize: 24, fontWeight: 700, color: C.text, marginBottom: 10, letterSpacing: '-0.02em' }}>
+          Your account is ready — our email isn’t
+        </h2>
+        <p style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.6, marginBottom: 6 }}>
+          We created your workspace for
+        </p>
+        <p style={{ fontSize: 14, fontWeight: 700, color: C.text, marginBottom: 18, wordBreak: 'break-all' }}>
+          {email}
+        </p>
+        <div style={{
+          background: 'rgba(245,158,11,.12)', color: '#B45309', border: '1px solid rgba(245,158,11,.3)',
+          borderRadius: 10, padding: '11px 13px', fontSize: 13, lineHeight: 1.6,
+          marginBottom: 20, textAlign: 'left',
+        }}>
+          But we couldn’t send your confirmation link — that’s a problem on our side, not yours.
+          The {brandName} team can see this and will activate your account. You don’t need to
+          sign up again, and trying again won’t help.
+        </div>
+        <button
+          type="button"
+          onClick={onBackToSignIn}
+          style={{
+            width: '100%', padding: '12px', borderRadius: 10,
+            border: `1.5px solid ${C.border}`, background: C.cardBg, color: C.text,
+            fontSize: 14, fontWeight: 600, fontFamily: FONT, cursor: 'pointer',
+          }}
+        >
+          Back to sign in
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div style={{ textAlign: 'center' }}>
       <div style={{

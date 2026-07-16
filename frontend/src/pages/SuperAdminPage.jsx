@@ -15,7 +15,7 @@ import {
   LayoutDashboard, Users, Building2, CreditCard, Palette, ScrollText,
   ChevronLeft, ChevronRight, TrendingUp, Bot, Contact,
   PlugZap, CheckCircle2, AlertTriangle, XCircle, Clock, ShieldAlert,
-  KeyRound, Trash2, Receipt, Check,
+  KeyRound, Trash2, Receipt, Check, MailWarning,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { C, FONT } from '../constants.js';
@@ -25,13 +25,18 @@ import { ChartCard, LineChart, BarChart, StatTile } from '../components/superadm
 
 // Nav depends on the operator: the platform owner manages Partners (resellers);
 // a white-label reseller manages their own Branding and can never see Partners.
-function navGroupsFor(user, { pendingCount = 0 } = {}) {
+function navGroupsFor(user, { pendingCount = 0, unverifiedCount = 0 } = {}) {
   const groups = [
     // Not "Platform" — the rail header above already says PLATFORM / Super Admin.
     { title: 'Overview', items: [{ key: 'overview', label: 'Dashboard', Icon: LayoutDashboard }] },
     {
       title: 'Customers', items: [
         { key: 'admins', label: 'Admins', Icon: Users },
+        // Only worth a slot when someone is actually stuck — on a healthy
+        // install this is permanently empty and would just be noise.
+        ...(unverifiedCount > 0
+          ? [{ key: 'signups', label: 'Unverified', Icon: MailWarning, badge: unverifiedCount }]
+          : []),
         ...(user?.isSuperAdmin ? [{ key: 'partners', label: 'Partners', Icon: Building2 }] : []),
       ],
     },
@@ -57,6 +62,7 @@ const SECTION_TITLES = {
   partners: ['Partners', 'White-label resellers with their own branded login and console.'],
   plans: ['Plans', 'The plan catalog: pricing, limits and included features.'],
   requests: ['Plan Requests', 'Customers asking to buy a plan. Approving one activates it — collect payment first.'],
+  signups: ['Unverified signups', 'People who created an account but haven’t confirmed their email — so they can’t sign in yet.'],
   branding: ['Branding', 'How your customers see your white-label workspace.'],
   audit: ['Audit Log', 'Every platform mutation, newest first.'],
 };
@@ -102,7 +108,11 @@ export default function SuperAdminPage({ user }) {
   // indefinitely — the whole purchase flow is manual, so this IS the alert.
   const { data: pendingReqs } = useAsync(() => api.platform.planRequests('pending'), []);
   const pendingCount = Array.isArray(pendingReqs) ? pendingReqs.length : 0;
-  const GROUPS = navGroupsFor(user, { pendingCount });
+  // Stranded signups. Fetched at the console root so the rail can flag them —
+  // the whole point is that nobody would think to go looking.
+  const { data: signups, reload: reloadSignups } = useAsync(() => api.platform.signups(), []);
+  const unverifiedCount = Array.isArray(signups) ? signups.length : 0;
+  const GROUPS = navGroupsFor(user, { pendingCount, unverifiedCount });
   const isReseller = !!user?.isResellerAdmin;
   // Only the platform owner can impersonate (the impersonation route is
   // super-admin-only); resellers manage but don't impersonate.
@@ -134,6 +144,7 @@ export default function SuperAdminPage({ user }) {
 
           {tab === 'overview' && <Dashboard />}
           {tab === 'admins' && <Admins isSuper={isSuper} />}
+          {tab === 'signups' && <UnverifiedSignups rows={signups || []} onChanged={reloadSignups} />}
           {tab === 'partners' && <Partners />}
           {tab === 'plans' && <Plans />}
           {tab === 'requests' && <PlanRequests />}
@@ -1414,6 +1425,136 @@ function PlanEditor({ plan, allFeatures, onClose, onSaved }) {
 }
 
 // ─── Audit ───────────────────────────────────────────────────────────────────
+// ─── Unverified signups ──────────────────────────────────────────────────────
+// These people are locked out of accounts they already created. The list exists
+// because that used to be invisible: the mailer failure was a server log line,
+// the customer just saw nothing arrive, and nobody could connect the two.
+function UnverifiedSignups({ rows, onChanged }) {
+  const [busy, setBusy] = useState(0);
+  const [err, setErr] = useState('');
+
+  // A delivery failure is OUR fault and is fixable centrally; "sent but not
+  // clicked" is just someone who hasn't got round to it. Leading with the
+  // former is the difference between a config alarm and a nag list.
+  const failed = rows.filter(r => r.error);
+
+  const verify = async (row) => {
+    setErr('');
+    setBusy(row.id);
+    try {
+      await api.platform.verifyUserEmail(row.id);
+      onChanged();
+    } catch (e) {
+      setErr(e.message || 'Could not verify this account.');
+    } finally {
+      setBusy(0);
+    }
+  };
+
+  if (!rows.length) {
+    return (
+      <div style={{ ...card, textAlign: 'center', padding: 40 }}>
+        <MailWarning size={26} color={C.textMuted} style={{ marginBottom: 10 }} />
+        <div style={{ fontSize: 14, fontWeight: 700, color: C.text, marginBottom: 4 }}>Everyone’s confirmed</div>
+        <div style={{ fontSize: 13, color: C.textMuted }}>
+          Nobody is waiting on a confirmation email.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {err && <ErrorBox msg={err} />}
+
+      {failed.length > 0 && (
+        // One shared cause, one shared fix. Repeating the same SMTP error on
+        // every row would bury the fact that the mailer itself is down.
+        <div style={{
+          ...card, marginBottom: 14, borderColor: 'rgba(245,158,11,.4)',
+          background: 'rgba(245,158,11,.10)',
+        }}>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+            <AlertTriangle size={17} color="#B45309" style={{ flexShrink: 0, marginTop: 1 }} />
+            <div>
+              <div style={{ fontSize: 13.5, fontWeight: 800, color: '#B45309', marginBottom: 4 }}>
+                Confirmation emails are failing to send
+              </div>
+              <div style={{ fontSize: 12.5, color: C.textSecondary, lineHeight: 1.6 }}>
+                {failed.length} {failed.length === 1 ? 'person is' : 'people are'} locked out of accounts
+                they created, and it isn’t their fault. Your mail provider said:
+                <div style={{
+                  marginTop: 7, padding: '8px 10px', borderRadius: 7, fontFamily: 'monospace',
+                  fontSize: 11.5, background: C.cardBg, border: `1px solid ${C.border}`, color: C.text,
+                }}>{failed[0].error}</div>
+                <div style={{ marginTop: 7 }}>
+                  Fix <code>SMTP_*</code> in the root <code>.env</code> and redeploy — or verify them by hand below.
+                  Unsetting <code>SMTP_HOST</code> turns confirmation off entirely and lets everyone in.
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div style={{ ...card, padding: 0, overflow: 'hidden' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13.5 }}>
+          <thead>
+            <tr style={{ background: C.pageBg, textAlign: 'left', color: C.textSecondary }}>
+              {['Email', 'Workspace', 'Signed up', 'Email status', ''].map(h => (
+                <th key={h} style={{ padding: '11px 14px', fontWeight: 600, fontSize: 12 }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(r => (
+              <tr key={r.id} style={{ borderTop: `1px solid ${C.border}` }}>
+                <td style={{ padding: '11px 14px' }}>
+                  <div style={{ fontWeight: 600 }}>{r.email}</div>
+                  {r.name && <div style={{ fontSize: 12, color: C.textMuted }}>{r.name}</div>}
+                </td>
+                <td style={{ padding: '11px 14px', color: C.textSecondary }}>{r.tenant?.name || '—'}</td>
+                <td style={{ padding: '11px 14px', color: C.textSecondary }}>{fmtDate(r.createdAt)}</td>
+                <td style={{ padding: '11px 14px' }}>
+                  {r.error ? (
+                    <span title={r.error} style={{
+                      fontSize: 11, fontWeight: 700, color: '#B45309', background: 'rgba(245,158,11,.14)',
+                      padding: '3px 9px', borderRadius: 20, display: 'inline-flex', alignItems: 'center', gap: 5,
+                    }}>
+                      <AlertTriangle size={11} /> Delivery failed
+                    </span>
+                  ) : (
+                    <span style={{
+                      fontSize: 11, fontWeight: 700, color: C.textMuted, background: C.surfaceAlt,
+                      padding: '3px 9px', borderRadius: 20, display: 'inline-flex', alignItems: 'center', gap: 5,
+                    }}>
+                      <Clock size={11} /> Sent, not confirmed
+                    </span>
+                  )}
+                </td>
+                <td style={{ padding: '11px 14px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                  <button
+                    type="button" disabled={busy === r.id}
+                    onClick={() => verify(r)}
+                    style={{ ...btn, display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                    title="Mark this address as confirmed so they can sign in"
+                  >
+                    <Check size={14} /> {busy === r.id ? 'Working…' : 'Verify manually'}
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p style={{ fontSize: 11.5, color: C.textMuted, margin: '10px 2px 0', lineHeight: 1.55 }}>
+        Verifying by hand skips the proof that they control the address, so it’s recorded against
+        your account in the audit log. Only do it for signups you recognise.
+      </p>
+    </>
+  );
+}
+
 // ─── Plan requests ───────────────────────────────────────────────────────────
 // Customers can't charge themselves — there's no gateway — so a chosen plan
 // lands here. Approving performs the same subscription change as the Admins tab,

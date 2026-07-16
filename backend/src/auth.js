@@ -589,9 +589,12 @@ router.post('/auth/signup', signupLimiter, async (req, res) => {
       if (mustVerify) {
         // Delivery is best-effort and deliberately outside the transaction: a
         // dead SMTP host must not destroy an account that was already created.
-        // They can always ask for a new link.
         const brandName = await brandNameFor(ws.resellerId);
         const sent = await verification.sendVerificationEmail({ to: email, token: rawToken, brandName });
+        // Record the outcome. A failure used to exist only as a log line, which
+        // meant nobody — not the user, not the operator — could tell the account
+        // was unreachable. Now it surfaces in the console as a support task.
+        await verification.recordSendResult(ws.userId, sent);
         if (!sent.ok) console.error('[auth] verification email failed:', sent.error);
         return res.status(201).json({ verificationRequired: true, email, emailSent: !!sent.ok });
       }
@@ -666,7 +669,11 @@ router.post('/auth/resend-verification', signupLimiter, async (req, res) => {
     const raw = await verification.issueToken(client, rows[0].id);
     await client.query('COMMIT');
     const brandName = await brandNameFor(rows[0].reseller_id);
-    await verification.sendVerificationEmail({ to: rows[0].email, token: raw, brandName });
+    const sent = await verification.sendVerificationEmail({ to: rows[0].email, token: raw, brandName });
+    // Same bookkeeping as signup: this is the button people press when the first
+    // email never arrived, so its failure is the one most worth recording.
+    await verification.recordSendResult(rows[0].id, sent);
+    if (!sent.ok) console.error('[auth] resend verification failed:', sent.error);
     res.json(ok);
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch { /* ignore */ }

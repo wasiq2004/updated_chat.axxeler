@@ -479,6 +479,10 @@ export const api = {
     tenantUsers: (id) => req(`/platform/tenants/${id}/users`),
     // Plan requests: customers asking to buy a plan. Approving one activates the
     // subscription (payment is collected out of band — there is no gateway).
+    // Self-serve signups stranded without a confirmed email — usually because
+    // the mailer is misconfigured, which is our problem, not theirs.
+    signups: () => req('/platform/signups'),
+    verifyUserEmail: (userId) => req(`/platform/users/${userId}/verify-email`, { method: 'POST' }),
     planRequests: (status = 'pending') => req(`/platform/plan-requests?status=${encodeURIComponent(status)}`),
     // force:true overrides the over-limit guard on a downgrade (409 OVER_LIMIT).
     approvePlanRequest: (id, force = false) =>
