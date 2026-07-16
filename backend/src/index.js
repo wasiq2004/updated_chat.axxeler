@@ -6,7 +6,7 @@ require('./util/instanceSecrets').bootstrapSecrets();
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
-const rateLimit = require('express-rate-limit');
+const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const cookieParser = require('cookie-parser');
 const pool = require('./db');
 const { router: authRouter, authMiddleware, ensureTables, verifyToken } = require('./auth');
@@ -108,6 +108,17 @@ app.use(express.json({ limit: '1mb', verify: (req, _res, buf) => { req.rawBody =
 // Serve uploaded files statically
 app.use('/uploads', express.static(UPLOAD_DIR));
 
+// We run behind exactly one reverse proxy (Traefik in docker-compose; nginx in
+// the frontend image). Without this, req.ip is the PROXY's address for every
+// request — so every user on the internet shares a single rate-limit bucket, and
+// the per-IP signup cap becomes a global cap. express-rate-limit warns about it
+// as ERR_ERL_UNEXPECTED_X_FORWARDED_FOR.
+//
+// The value is 1, not `true`: trusting ALL hops would let a client spoof its own
+// address by sending its own X-Forwarded-For. 1 trusts only the nearest proxy —
+// ours — which is the only one that can't be forged.
+app.set('trust proxy', 1);
+
 // Rate limiting
 const apiLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -119,10 +130,12 @@ const apiLimiter = rateLimit({
     // Per-user bucket so concurrent users never share each other's limit. Use a
     // VERIFIED token (not jwt.decode) so a forged cookie can't claim another
     // user's key to drain their quota, nor mint fresh buckets to bypass the cap.
-    // Unauthenticated / invalid → fall back to the client IP.
+    // Unauthenticated / invalid → fall back to the client IP, via the library's
+    // helper: a bare req.ip gives every IPv6 client its own bucket (they hold a
+    // whole /64), so they could walk straight through the cap. ERR_ERL_KEY_GEN_IPV6.
     const payload = verifyToken(req.cookies?.z_chat_token);
     if (payload?.id != null) return `user:${payload.id}`;
-    return req.ip;
+    return ipKeyGenerator(req.ip);
   },
   handler: (req, res) => {
     res.status(429).json({ error: 'Too many requests, please try again later' });
@@ -236,6 +249,20 @@ async function start() {
   // hard-block here because rejecting unverifiable webhooks when the secret is
   // simply unset would drop all real inbound messages — set the secret to close
   // the gap; once set, routes/webhook.js already rejects bad signatures.
+  // Which mail transport is live, said out loud at boot. Email is opt-in and
+  // fails silently by design, so "is it even on, and via what?" was previously
+  // unanswerable without reading the code — and the answer decides whether
+  // signup requires a confirmation link at all.
+  const { mailerMode } = require('./util/mailer');
+  const mode = mailerMode();
+  if (mode === 'none') {
+    console.log('[mailer] not configured — signups auto-verify, password reset by email is unavailable. '
+      + 'Set RESEND_API_KEY (recommended) or SMTP_HOST to enable.');
+  } else {
+    console.log(`[mailer] transport: ${mode} — email verification is ON.`
+      + (mode === 'smtp' ? ' NOTE: many hosts block outbound SMTP; RESEND_API_KEY uses HTTPS and avoids that.' : ''));
+  }
+
   if (process.env.NODE_ENV === 'production' && !process.env.META_APP_SECRET) {
     console.warn(
       '[security] META_APP_SECRET is NOT set — inbound WhatsApp webhooks are accepted ' +

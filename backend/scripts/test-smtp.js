@@ -1,18 +1,18 @@
-// Send one real email to prove the SMTP credentials work.
+// Send one real email to prove the mail configuration works.
 //
 //   node backend/scripts/test-smtp.js you@example.com
 //
 // Why this exists: util/mailer.sendMail never throws — it swallows failures into
-// a console line and returns { ok: false }. So a wrong password or an
-// unverified From: address shows up in production as a signup that silently
-// never arrives. This script surfaces the provider's actual error instead.
+// a console line and returns { ok: false }. So a wrong key, an unverified sender
+// domain, or a host that blocks outbound SMTP all look identical in production:
+// a signup that silently never arrives. This surfaces the provider's real error.
 //
 // Reads the REPO-ROOT .env (what docker compose uses), not backend/.env.
 
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '../../.env') });
 
-const { sendMail, isMailerConfigured } = require('../src/util/mailer');
+const { sendMail, isMailerConfigured, mailerMode } = require('../src/util/mailer');
 
 const to = process.argv[2];
 
@@ -24,30 +24,39 @@ function fail(msg) {
 (async () => {
   if (!to) fail('Usage: node backend/scripts/test-smtp.js <recipient@example.com>');
 
-  console.log('\n  SMTP configuration (from the repo-root .env)');
-  console.log(`    SMTP_HOST : ${process.env.SMTP_HOST || '(unset)'}`);
-  console.log(`    SMTP_PORT : ${process.env.SMTP_PORT || '(unset — defaults to 587)'}`);
-  console.log(`    SMTP_USER : ${process.env.SMTP_USER || '(unset — will connect unauthenticated)'}`);
-  // Never print the password. Length alone is enough to spot an empty or
-  // truncated paste, which is the usual mistake.
-  console.log(`    SMTP_PASS : ${process.env.SMTP_PASS ? `set (${process.env.SMTP_PASS.length} chars)` : '(unset)'}`);
-  console.log(`    SMTP_FROM : ${process.env.SMTP_FROM || '(unset — falls back to SMTP_USER)'}`);
-  console.log(`    APP_URL   : ${process.env.APP_URL || '(unset — verification links fall back to CORS_ORIGIN)'}`);
+  const mode = mailerMode();
+  console.log(`\n  Transport: ${mode}`);
+
+  if (mode === 'resend-http') {
+    const key = process.env.RESEND_API_KEY || '';
+    console.log(`    RESEND_API_KEY : set (${key.length} chars, starts '${key.slice(0, 3)}')`);
+    console.log(`    MAIL_FROM      : ${process.env.MAIL_FROM || process.env.SMTP_FROM || '(unset)'}`);
+  } else if (mode === 'smtp') {
+    console.log(`    SMTP_HOST : ${process.env.SMTP_HOST}`);
+    console.log(`    SMTP_PORT : ${process.env.SMTP_PORT || '(unset — defaults to 587)'}`);
+    console.log(`    SMTP_USER : ${process.env.SMTP_USER || '(unset — unauthenticated)'}`);
+    // Never print the password. Length alone spots an empty or truncated paste.
+    console.log(`    SMTP_PASS : ${process.env.SMTP_PASS ? `set (${process.env.SMTP_PASS.length} chars)` : '(unset)'}`);
+    console.log(`    SMTP_FROM : ${process.env.SMTP_FROM || '(unset — falls back to SMTP_USER)'}`);
+    console.log('\n    NOTE: many cloud hosts block outbound SMTP. If this fails with');
+    console.log('    "Greeting never received", the port is blocked — no credential change');
+    console.log('    will fix it. Set RESEND_API_KEY instead and drop SMTP_HOST.');
+  }
+  console.log(`    APP_URL   : ${process.env.APP_URL || '(unset — links fall back to CORS_ORIGIN)'}`);
 
   if (!isMailerConfigured()) {
-    fail('SMTP_HOST is not set, so the app treats the mailer as absent.\n' +
-         '    Signups will auto-verify instead of sending a link. Set SMTP_HOST to turn verification on.');
+    fail('No mail transport configured, so the app treats email as absent.\n' +
+         '    Signups auto-verify instead of sending a link.\n' +
+         '    Set RESEND_API_KEY (recommended) or SMTP_HOST to turn verification on.');
   }
 
-  // Mirrors what a real verification email looks like, so a provider that
-  // rejects the From: address or the link fails here rather than at signup.
   const appUrl = (process.env.APP_URL || 'http://localhost:5173').replace(/\/+$/, '');
   console.log(`\n  Sending to ${to} …`);
   const result = await sendMail({
     to,
-    subject: 'Zen Chat SMTP test',
+    subject: 'Zen Chat mail test',
     text:
-      'This is a test from the Zen Chat SMTP check.\n\n' +
+      'This is a test from the Zen Chat mail check.\n\n' +
       'If you can read this, signup confirmation emails will work.\n\n' +
       `A real confirmation link would look like:\n${appUrl}/?verify=example-token\n`,
   });
@@ -55,13 +64,13 @@ function fail(msg) {
   if (!result.ok) {
     fail(`Send FAILED: ${result.error}\n\n` +
          '    Common causes:\n' +
-         '      • Wrong SMTP_PASS (for Resend this is the API key, starting "re_")\n' +
-         '      • SMTP_FROM uses a domain the provider has not verified yet\n' +
-         '      • Port blocked by the host — try 587, or 465 for implicit TLS\n' +
-         '      • Provider still in test mode: can only send to your own account address');
+         '      • Sender domain not verified with the provider (check MAIL_FROM)\n' +
+         '      • Wrong/revoked API key\n' +
+         '      • Provider still in test mode: can only send to your own account address\n' +
+         '      • (SMTP only) outbound port blocked by your host');
   }
 
-  console.log(`\n  ✔ Sent. messageId: ${result.messageId}`);
+  console.log(`\n  ✔ Sent. id: ${result.messageId || '(none returned)'}`);
   console.log('    Check the inbox — and the spam folder. Landing in spam means');
   console.log('    SPF/DKIM DNS records are missing or not yet propagated.\n');
   process.exit(0);
