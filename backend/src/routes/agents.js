@@ -26,7 +26,11 @@ async function agentInTenant(req, agentId) {
 
 const router = Router();
 
-const SUPPORTED_PROVIDERS = new Set(['anthropic', 'openai', 'groq']);
+// Derived from the LLM registry — this was a hand-listed Set, and a provider
+// missing from it was rejected at agent-create with "isn't supported by agents"
+// despite the adapter existing.
+const { PROVIDER_IDS } = require('../llm/providers');
+const SUPPORTED_PROVIDERS = new Set(PROVIDER_IDS);
 
 // Rows from the list/get queries carry joined ai_models columns aliased
 // ai_provider / ai_label so the UI can render "OpenAI — My key" without a

@@ -1334,7 +1334,11 @@ const AI_TASK_LABELS = {
   order_status: 'order status lookup', payment_assistance: 'payment assistance',
   faq_answering: 'FAQ answering', data_collection: 'structured data collection',
 };
-const AI_DEFAULT_MODEL = { anthropic: 'claude-haiku-4-5-20251001', openai: 'gpt-4o-mini', groq: 'llama-3.3-70b-versatile' };
+// Derived, never hand-listed: a provider missing from this map used to send
+// `model: undefined` to the API.
+const { providerDefaultModels, PROVIDER_IDS, providerEnvKeys, resolveBaseUrl } = require('../llm/providers');
+const googleSheets = require('../services/googleSheets');
+const AI_DEFAULT_MODEL = providerDefaultModels();
 
 // AI step: single-shot LLM call (via the AI Models registry) scoped to a
 // concrete business task. Replies to the contact on WhatsApp (inside the 24h
@@ -1381,18 +1385,34 @@ async function executeAINode(client, executionId, node, context) {
   if (win.length === 0) return runFallback('outside_24h_window');
 
   // First usable model from the registry (env keys as fallback).
+  //
+  // The provider filter is parameterised from the registry, not a literal
+  // IN ('anthropic','openai','groq'). That literal was the nastiest of the
+  // hardcoded lists: a connected key for an unlisted provider was dropped at the
+  // SQL layer, so this fell through to "no_ai_model_connected" while a perfectly
+  // valid credential sat in the table — no error, nothing to grep for.
+  //
+  // base_url is selected too. The column has existed since migration 029 and was
+  // read by nothing, so a saved gateway override was silently ignored.
   const { rows: models } = await client.query(
-    `SELECT id, provider, api_key_encrypted FROM coexistence.ai_models
-      WHERE provider IN ('anthropic','openai','groq') ORDER BY created_at DESC`
+    `SELECT id, provider, api_key_encrypted, base_url FROM coexistence.ai_models
+      WHERE provider = ANY($1::text[]) ORDER BY created_at DESC`,
+    [PROVIDER_IDS]
   );
-  let provider = null, apiKey = null;
+  let provider = null, apiKey = null, baseUrlOverride = null;
   for (const m of models) {
     const k = m.api_key_encrypted ? decrypt(m.api_key_encrypted) : null;
-    if (k) { provider = m.provider; apiKey = k; break; }
+    if (k) { provider = m.provider; apiKey = k; baseUrlOverride = m.base_url || null; break; }
   }
-  if (!apiKey && process.env.ANTHROPIC_API_KEY) { provider = 'anthropic'; apiKey = process.env.ANTHROPIC_API_KEY; }
-  if (!apiKey && process.env.OPENAI_API_KEY)    { provider = 'openai';    apiKey = process.env.OPENAI_API_KEY; }
-  if (!apiKey && process.env.GROQ_API_KEY)      { provider = 'groq';      apiKey = process.env.GROQ_API_KEY; }
+  // Env fallback, in registry order — was three hand-written if-statements that
+  // a new provider would never be added to.
+  if (!apiKey) {
+    const envKeys = providerEnvKeys();
+    for (const id of PROVIDER_IDS) {
+      const v = process.env[envKeys[id]];
+      if (v) { provider = id; apiKey = v; break; }
+    }
+  }
   if (!apiKey) return runFallback('no_ai_model_connected');
 
   try {
@@ -1416,6 +1436,9 @@ async function executeAINode(client, executionId, node, context) {
       onStep: async () => {},
       model: AI_DEFAULT_MODEL[provider],
       apiKey,
+      // null for a native provider or an unset override — the adapter then uses
+      // the provider's own endpoint, exactly as before.
+      baseURL: resolveBaseUrl(provider, baseUrlOverride),
       maxIterations: 1,
     });
     const reply = (result.finalText || '').trim();
@@ -1638,8 +1661,198 @@ async function executeSubflowNode(client, executionId, node, context) {
 // (yes/no branch), Smart Delay (non-blocking send delay), and Action (Add Tag /
 // Remove Tag etc.) are dispatched by the walker too — see walkFrom for how a
 // Condition's matched result selects the 'yes'/'no' outgoing edge.
-// handoff/ai/api/subflow handlers remain defined but unwired (not in the
-// builder palette); an unknown type is skipped by the walker, not failed.
+// Handoff to AI Agent: bind this conversation to a specific agent, which then
+// owns every subsequent inbound. The flow ENDS here (returns no next edge) —
+// letting it continue means the flow and the agent both answer the same message
+// and talk over each other.
+//
+// node.agentId       — the agent to bind (required)
+// node.agentBrief    — {{variable}}-aware note: what the FLOW concluded. The
+//                      agent already inherits the transcript automatically.
+// node.agentReplyNow — true: the agent answers this inbound now.
+//                      false: it waits for the customer's next message.
+async function executeAgentHandoffNode(client, executionId, node, context) {
+  const base = { nodeId: node.id, nodeType: 'agentHandoff' };
+  const waNumber = context.trigger_data?.wa_number;
+  const contactNumber = context.contact_number;
+  if (!waNumber || !contactNumber) {
+    await logStep(client, executionId, node, {}, { error: 'context missing wa_number or contact_number' }, 'error');
+    return { ...base, status: 'error', __endFlow: true };
+  }
+  const agentId = parseInt(node.agentId, 10);
+  if (!agentId) {
+    await logStep(client, executionId, node, {}, { error: 'No agent selected on this node' }, 'error');
+    return { ...base, status: 'error', __endFlow: true };
+  }
+
+  // The agent replies from its OWN bound number. A binding whose account differs
+  // from the conversation's would answer the customer from the wrong number —
+  // refuse rather than do that.
+  const { rows: agentRows } = await client.query(
+    `SELECT a.id, a.name, a.status,
+            regexp_replace(w.display_phone_number, '\\D', '', 'g') AS agent_wa_number
+       FROM coexistence.agents a
+       JOIN coexistence.whatsapp_accounts w ON w.id = a.wa_account_id
+      WHERE a.id = $1`,
+    [agentId],
+  );
+  const agent = agentRows[0];
+  if (!agent) {
+    await logStep(client, executionId, node, {}, { error: `Agent id=${agentId} not found or has no WhatsApp account bound` }, 'error');
+    return { ...base, status: 'error', __endFlow: true };
+  }
+  if (agent.status === 'draft') {
+    await logStep(client, executionId, node, {}, { error: `Agent "${agent.name}" is a draft — activate or finish it first.` }, 'error');
+    return { ...base, status: 'error', __endFlow: true };
+  }
+  if (agent.agent_wa_number !== String(waNumber).replace(/\D/g, '')) {
+    await logStep(client, executionId, node, {}, {
+      error: `Agent "${agent.name}" is bound to a different WhatsApp number — it would reply to the customer from the wrong number.`,
+    }, 'error');
+    return { ...base, status: 'error', __endFlow: true };
+  }
+
+  const brief = node.agentBrief ? resolveVariables(String(node.agentBrief), context) : null;
+
+  // Bind. The contact row may not exist yet (an automation can fire before the
+  // contact is saved), so upsert — same pattern as the tag actions.
+  await client.query(
+    `INSERT INTO coexistence.contacts (wa_number, contact_number, agent_id, agent_bound_at, agent_brief, updated_at)
+     VALUES ($1, $2, $3, NOW(), $4, NOW())
+     ON CONFLICT (wa_number, contact_number) DO UPDATE
+       SET agent_id = EXCLUDED.agent_id,
+           agent_bound_at = NOW(),
+           agent_brief = EXCLUDED.agent_brief,
+           updated_at = NOW()`,
+    [waNumber, contactNumber, agentId, brief],
+  );
+
+  // THE TRAP: a human takeover outranks this node.
+  //
+  // Automations fire regardless of agent_paused, so without this check a
+  // customer saying "pricing" mid-conversation could trigger a flow that revokes
+  // an active human takeover and has the AI talk over a live rep. We still BIND
+  // (so the right agent is queued up for when the human hands back), but we do
+  // not clear the pause and we send nothing.
+  const { isConversationPaused } = require('../services/agentHandoff');
+  let paused = false;
+  try { paused = await isConversationPaused(waNumber, contactNumber); } catch { /* treat as not paused */ }
+  if (paused) {
+    await logStep(client, executionId, node, { agentId, replyNow: !!node.agentReplyNow }, {
+      bound: true, agent: agent.name, silent: true,
+      note: 'A human has taken over this conversation — bound the agent for later but sent nothing.',
+    }, 'success');
+    return { ...base, status: 'success', __endFlow: true };
+  }
+
+  // Reply now, or wait for their next message. "Wait" is the safer default for a
+  // flow that has just sent its own message — replying now would put two
+  // messages back to back.
+  if (node.agentReplyNow) {
+    const { enqueueAgentRun } = require('../queue/agentQueue');
+    await enqueueAgentRun({
+      agentId,
+      contactNumber,
+      inboundMessageId: context.trigger_data?.message_id || null,
+      inboundText: context.message_body || null,
+      // Bound agents are usually not the account's active one — see agentRouter.
+      explicitlyBound: true,
+    });
+  }
+
+  await logStep(client, executionId, node, { agentId, replyNow: !!node.agentReplyNow }, {
+    bound: true, agent: agent.name, brief: brief || null,
+  }, 'success');
+  // __endFlow: the agent owns the conversation now. This is the walker's real
+  // termination signal — without it the flow keeps walking and both the flow and
+  // the agent answer the same inbound, talking over each other.
+  return { ...base, status: 'success', __endFlow: true };
+}
+
+// Google Sheets node. ONE node type with an `op` discriminator rather than six
+// node types — they share an account/spreadsheet/tab picker and differ only in
+// what they do with the mapped columns, so six types would be six copies of the
+// same config panel.
+//
+// The operator maps COLUMN NAMES; googleSheets owns all row/range arithmetic.
+//
+// node.op          — addRow | updateRow | getRows | readRange | deleteRow | clearSheet
+// node.googleAccountId / spreadsheetId / sheetName
+// node.mappings    — [{ column, value }], value is {{variable}}-aware
+// node.keyColumn / keyValue — for updateRow / getRows / deleteRow
+// node.createIfMissing — updateRow only
+async function executeSheetsNode(client, executionId, node, context) {
+  const op = node.op || 'addRow';
+  const cfg = {
+    credentialId: node.googleAccountId,
+    spreadsheetId: node.spreadsheetId,
+    sheetName: node.sheetName,
+  };
+  if (!cfg.credentialId || !cfg.spreadsheetId || !cfg.sheetName) {
+    return logStep(client, executionId, node, { op },
+      { error: 'This Sheets step has no spreadsheet selected.' }, 'error',
+      'No spreadsheet selected');
+  }
+
+  // Resolve {{variables}} before anything reaches Google.
+  const mappings = (Array.isArray(node.mappings) ? node.mappings : [])
+    .filter(m => m && m.column)
+    .map(m => ({ column: String(m.column), value: resolveVariables(String(m.value ?? ''), context) }));
+  const keyValue = node.keyValue ? resolveVariables(String(node.keyValue), context) : '';
+  const input = { op, spreadsheet: node.spreadsheetName || node.spreadsheetId, tab: node.sheetName, mappings, keyColumn: node.keyColumn, keyValue };
+
+  try {
+    let result;
+    if (op === 'addRow') {
+      if (mappings.length === 0) throw new Error('Map at least one column to a value.');
+      result = await googleSheets.runOp('addRow', {
+        ...cfg,
+        args: { fields: Object.fromEntries(mappings.map(m => [m.column, m.value])) },
+      });
+    } else if (op === 'updateRow') {
+      if (!node.keyColumn) throw new Error('Pick the column that identifies the row to update.');
+      result = await googleSheets.runOp('upsert', {
+        ...cfg,
+        args: {
+          key_column: node.keyColumn,
+          key_value: keyValue,
+          fields: Object.fromEntries(mappings.map(m => [m.column, m.value])),
+          // Defaults FALSE here, unlike the agent tool: a flow step called
+          // "Update row" should update. Creating a row on a typo'd key is how
+          // you silently get duplicate customers. `not_found` is then a real
+          // outcome, logged as success — not a failure.
+          create_if_missing: node.createIfMissing === true,
+        },
+      });
+    } else if (op === 'getRows') {
+      result = await googleSheets.runOp('getRows', {
+        ...cfg,
+        args: { key_column: node.keyColumn || undefined, key_value: keyValue || undefined, max_rows: node.maxRows || 50 },
+      });
+    } else if (op === 'readRange') {
+      result = await googleSheets.runOp('read', { ...cfg, args: { range: node.range || undefined, max_rows: node.maxRows || 50 } });
+    } else if (op === 'deleteRow') {
+      if (!node.keyColumn) throw new Error('Pick the column that identifies the row to delete.');
+      result = await googleSheets.runOp('deleteRow', { ...cfg, args: { key_column: node.keyColumn, key_value: keyValue } });
+    } else if (op === 'clearSheet') {
+      result = await googleSheets.runOp('clearSheet', { ...cfg, args: { keep_header: node.keepHeader !== false } });
+    } else {
+      throw new Error(`Unknown Sheets operation "${op}".`);
+    }
+
+    // MUST return logStep's row: walkFrom reads step.output_data off it to pick
+    // the outgoing edge (getRows branches Found / Not found). Returning a custom
+    // object here would strand every Sheets node on its default edge.
+    return logStep(client, executionId, node, input, result, 'success');
+  } catch (err) {
+    return logStep(client, executionId, node, input, { error: err.message }, 'error', err.message);
+  }
+}
+
+// An unknown type is skipped by the walker (logged as a skipped step), not
+// failed. Note this list must match VALID_NODE_TYPES in routes/chatbots.js —
+// that one is the destructive gate: a type here but not there is deleted on save
+// along with its edges. nodeTypes.test.js asserts they agree.
 const NODE_HANDLERS = {
   trigger: executeTriggerNode,
   message: executeMessageNode,
@@ -1650,6 +1863,8 @@ const NODE_HANDLERS = {
   api: executeAPINode,
   ai: executeAINode,
   subflow: executeSubflowNode,
+  agentHandoff: executeAgentHandoffNode,
+  sheets: executeSheetsNode,
 };
 
 // ─── Graph Walker ────────────────────────────────────────────────────
@@ -1755,6 +1970,11 @@ async function walkFrom(client, executionId, nodes, edges, startNodeId, context,
     let fromHandle = 'default';
     if (node.type === 'condition' && step && step.output_data) {
       fromHandle = step.output_data.matched ? 'yes' : 'no';
+    } else if (node.type === 'sheets' && node.op === 'getRows' && step && step.output_data) {
+      // Found / Not found. Without this the two branches would both fall through
+      // to `fromEdges[0]` and the "not found" path would silently run the
+      // "found" one.
+      fromHandle = step.output_data.found ? 'found' : 'notfound';
     }
     const fromEdges = edges.filter(e => e.from === currentNodeId);
     let nextEdge;
@@ -2178,4 +2398,8 @@ module.exports = {
   matchesKeyword,
   resolveVariables,
   evaluateConditions,
+  // Exported for tests: its rules (a human takeover outranks the node, refuse a
+  // cross-account binding, end the flow) are exactly the kind that fail silently
+  // in production and can't be eyeballed. See test/agentHandoffNode.test.js.
+  executeAgentHandoffNode,
 };

@@ -67,3 +67,4 @@ transform.js
 *.backup
 
 # Internal ops docs — not for the public repo
+FEATURE_PORT_PROMPT.md

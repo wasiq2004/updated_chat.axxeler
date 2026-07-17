@@ -21,14 +21,26 @@
 // the adapter and fed back to the model as a tool error — the loop continues
 // until the model stops asking for tools (or maxIterations).
 
+// `baseURL` is an optional extra opt honoured by the OpenAI-compatible adapters
+// (openai/groq/gemini/deepseek) and ignored by native ones (anthropic). It
+// carries ai_models.base_url so a credential can point at a gateway.
+//
+// The keys below MUST match llm/providers.js — providers.test.js fails if they
+// drift. providers.js is the catalog (labels, env vars, models, base URLs); this
+// file is the code behind each id.
+
 const anthropic = require('./anthropic');
 const openai = require('./openai');
 const groq = require('./groq');
+const gemini = require('./gemini');
+const deepseek = require('./deepseek');
 
 const PROVIDERS = {
   anthropic,
   openai,
   groq,
+  gemini,
+  deepseek,
 };
 
 function getProvider(name) {

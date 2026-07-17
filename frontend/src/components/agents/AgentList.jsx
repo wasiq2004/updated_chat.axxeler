@@ -1,12 +1,16 @@
 import { Bot, MessageSquare, Edit3, Plus } from 'lucide-react';
 import { C, FONT, MONO } from '../../constants.js';
-import { PROVIDER_LABELS } from './modelCatalog.js';
+import { providerDisplay, useProviderCatalog } from './modelCatalog.js';
 
 /**
  * Read-only agent list. Each row: name + description + provider/model + bound
  * WA account + active status. Edit jumps into AgentEditor.
  */
 export default function AgentList({ agents, waAccounts, onEdit, onCreate }) {
+  // Provider labels come from the server catalog now. Called here (not in Row)
+  // so one fetch serves the whole list; the sync helpers below read its cache
+  // and this re-renders when it lands.
+  useProviderCatalog();
   if (agents.length === 0) {
     return <EmptyState onCreate={onCreate} />;
   }
@@ -24,8 +28,10 @@ export default function AgentList({ agents, waAccounts, onEdit, onCreate }) {
 function Row({ agent, waAccounts, onEdit }) {
   const wa = waAccounts.find(w => String(w.id) === String(agent.waAccountId));
   const isDraft = agent.status === 'draft';
+  // providerDisplay falls back to the raw id before the catalog loads (and for
+  // an unknown provider), so this never renders "undefined".
   const providerLabel = agent.aiProvider
-    ? `${PROVIDER_LABELS[agent.aiProvider] || agent.aiProvider}${agent.llmModel ? ` · ${agent.llmModel}` : ''}`
+    ? `${providerDisplay(agent.aiProvider)}${agent.llmModel ? ` · ${agent.llmModel}` : ''}`
     : 'No model connected';
   return (
     <div

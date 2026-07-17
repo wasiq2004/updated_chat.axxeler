@@ -4,9 +4,19 @@
 // which silently refreshes the cached token if it's about to expire. Tools
 // hand us a credentialId; we never see plain tokens.
 //
-// Three operations are exposed as agent tools: `read`, `append`, `update`.
-// Plus picker helpers (`listSpreadsheets`, `listSheetTabs`) used by the UI
-// when the operator is configuring which sheet an agent should touch.
+// Ops: `read`, `append`, `update`, `upsert`, `getRows`, `deleteRow`,
+// `clearSheet`. Plus picker helpers (`listSpreadsheets`, `listSheetTabs`) used
+// by the UI when the operator is configuring which sheet to touch.
+//
+// The operator maps COLUMN NAMES, never A1 ranges — this service owns all
+// row/range arithmetic. A misconfigured flow therefore can't scribble on the
+// wrong cells; the worst it can do is address a column that doesn't exist,
+// which is reported rather than written.
+//
+// IDEMPOTENCY, and why it decides what may be retried:
+//   Google can apply a write and still fail the response. Retrying `append`
+//   duplicates the row; retrying `deleteRow` removes a SECOND row. Only
+//   read / update-by-key / clear are safe to retry — see IDEMPOTENT_OPS.
 
 const { google } = require('googleapis');
 const { getAccessToken } = require('./googleAuth');
@@ -251,8 +261,15 @@ async function upsert({ credentialId, spreadsheetId, sheetName, args = {} }) {
     return { action: 'updated', row: absRow, key: { column: keyColumn, value: keyValue }, wrote: writes.map(w => header[w.col]), skippedUnknownColumns };
   }
 
-  // 4. No match → write a new positioned row after the last non-empty line
-  // (deterministic; avoids Google append landing on a Tables header banner).
+  // 4. No match.
+  //
+  // create_if_missing defaults TRUE so the agent-tool behaviour is unchanged.
+  // The automation's "Update row" node passes false when the operator didn't ask
+  // for a create — silently inventing a row is how you get duplicate customers
+  // from a typo'd key.
+  if (args.create_if_missing === false) {
+    return { action: 'not_found', key: { column: keyColumn, value: keyValue } };
+  }
   let lastNonEmpty = -1;
   for (let i = 0; i < rows.length; i++) {
     if ((rows[i] || []).some(c => String(c == null ? '' : c).trim() !== '')) lastNonEmpty = i;
@@ -265,6 +282,232 @@ async function upsert({ credentialId, spreadsheetId, sheetName, args = {} }) {
   await writeSpan(targetRow, 0, maxC, rowArr);
   return { action: 'appended', row: targetRow, key: { column: keyColumn, value: keyValue }, wrote: writes.map(w => header[w.col]), skippedUnknownColumns };
 }
+
+/* ── Ops added for the automation builder's Sheets nodes ──────────────────── */
+
+// Read window. Both `append` and `upsert` already hardcode A1:Z2000; these ops
+// reuse the same ceiling so every op agrees on what "the sheet" is. Beyond it,
+// row arithmetic would silently mis-target, so the ops report truncation rather
+// than quietly working on a prefix.
+const MAX_COL = 'Z';
+const MAX_ROW = 2000;
+
+// Find the header row + column indexes. Deliberately NOT "row 1": these sheets
+// often have a styled title banner above the real header (the same thing that
+// makes values.append land on the header band).
+function locateHeader(rows, requiredColumn) {
+  let hIdx = -1;
+  if (requiredColumn) {
+    for (let i = 0; i < rows.length; i++) {
+      if ((rows[i] || []).some(c => normCell(c) === normCell(requiredColumn))) { hIdx = i; break; }
+    }
+  } else {
+    // No anchor column given: the first row with any non-empty cell.
+    for (let i = 0; i < rows.length; i++) {
+      if ((rows[i] || []).some(c => String(c == null ? '' : c).trim() !== '')) { hIdx = i; break; }
+    }
+  }
+  return hIdx;
+}
+
+/**
+ * Op: addRow — append a row from COLUMN-NAME → value mappings.
+ *
+ * The operator names columns; this resolves them to positions against the real
+ * header, so re-ordering the sheet's columns can't shift their data into the
+ * wrong ones. Unknown column names are reported, not written blindly.
+ *
+ * Not idempotent (it appends) — never auto-retried.
+ */
+async function addRow({ credentialId, spreadsheetId, sheetName, args = {} }) {
+  const fields = args.fields || {};
+  const names = Object.keys(fields);
+  if (names.length === 0) throw new Error('addRow needs at least one column mapped.');
+
+  const sheets = await authedSheets(credentialId);
+  const { data: readData } = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `'${sheetName}'!A1:${MAX_COL}${MAX_ROW}`,
+    valueRenderOption: 'UNFORMATTED_VALUE',
+  });
+  const rows = readData.values || [];
+  const start = parseStart(readData.range);
+  // Anchor on any mapped column so a styled title banner above the real header
+  // doesn't get mistaken for it.
+  let hIdx = -1;
+  for (const n of names) {
+    hIdx = locateHeader(rows, n);
+    if (hIdx !== -1) break;
+  }
+  if (hIdx === -1) {
+    throw new Error(`Could not find a header row containing any of: ${names.join(', ')} — check the column names in tab "${sheetName}".`);
+  }
+  const header = rows[hIdx];
+  const skippedUnknownColumns = [];
+  const cells = [];
+  for (const [name, value] of Object.entries(fields)) {
+    const col = header.findIndex(c => normCell(c) === normCell(name));
+    if (col === -1) { skippedUnknownColumns.push(name); continue; }
+    cells[col] = value;
+  }
+  if (cells.length === 0) {
+    throw new Error(`None of the mapped columns exist in tab "${sheetName}": ${skippedUnknownColumns.join(', ')}`);
+  }
+
+  let lastNonEmpty = -1;
+  for (let i = 0; i < rows.length; i++) {
+    if ((rows[i] || []).some(c => String(c == null ? '' : c).trim() !== '')) lastNonEmpty = i;
+  }
+  const targetRow = start.row + lastNonEmpty + 1;
+  const maxC = cells.length - 1;
+  const rowArr = [];
+  for (let c = 0; c <= maxC; c++) rowArr.push(cells[c] !== undefined ? cells[c] : '');
+
+  const { data } = await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: `'${sheetName}'!A${targetRow}:${colLetter(maxC)}${targetRow}`,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values: [rowArr] },
+  });
+  return {
+    action: 'appended',
+    row: targetRow,
+    updatedRange: data.updatedRange,
+    wrote: Object.keys(fields).filter(n => !skippedUnknownColumns.includes(n)),
+    skippedUnknownColumns,
+  };
+}
+
+/**
+ * Op: getRows — rows matching a column value, as objects keyed by header name.
+ * Branches Found / Not found in the builder.
+ *   args.key_column, args.key_value  — optional; omit to return every data row
+ *   args.max_rows
+ */
+async function getRows({ credentialId, spreadsheetId, sheetName, args = {} }) {
+  const sheets = await authedSheets(credentialId);
+  const { data } = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `'${sheetName}'!A1:${MAX_COL}${MAX_ROW}`,
+    valueRenderOption: 'UNFORMATTED_VALUE',
+  });
+  const rows = data.values || [];
+  const start = parseStart(data.range);
+  const hIdx = locateHeader(rows, args.key_column || null);
+  if (hIdx === -1) {
+    throw new Error(args.key_column
+      ? `Could not find a header row containing "${args.key_column}" in tab "${sheetName}".`
+      : `Tab "${sheetName}" looks empty — no header row found.`);
+  }
+  const header = rows[hIdx];
+  const asObject = (r, i) => {
+    const o = {};
+    header.forEach((h, ci) => { if (String(h || '').trim()) o[String(h).trim()] = r[ci] ?? ''; });
+    // The sheet row number, so a later update/delete addresses the right line.
+    o.__row = start.row + hIdx + 1 + i;
+    return o;
+  };
+  let data_rows = rows.slice(hIdx + 1).map(asObject);
+  if (args.key_column) {
+    const keyCol = header.findIndex(c => normCell(c) === normCell(args.key_column));
+    data_rows = rows.slice(hIdx + 1)
+      .map((r, i) => ({ r, i }))
+      .filter(({ r }) => keyMatch(r[keyCol], args.key_value))
+      .map(({ r, i }) => asObject(r, i));
+  }
+  const maxRows = Math.max(1, Math.min(500, parseInt(args.max_rows || 100, 10)));
+  return {
+    headers: header.map(h => String(h ?? '')),
+    found: data_rows.length > 0,
+    rowCount: data_rows.length,
+    truncated: data_rows.length > maxRows,
+    rows: data_rows.slice(0, maxRows),
+  };
+}
+
+/**
+ * Op: deleteRow — remove the first row whose key column matches.
+ *
+ * NOT idempotent: a retry deletes a DIFFERENT row (everything shifts up), so
+ * this must never be retried automatically. See IDEMPOTENT_OPS.
+ */
+async function deleteRow({ credentialId, spreadsheetId, sheetName, args = {} }) {
+  if (!args.key_column || args.key_value === undefined) {
+    throw new Error('deleteRow requires args.key_column and args.key_value');
+  }
+  const sheets = await authedSheets(credentialId);
+  const { data } = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `'${sheetName}'!A1:${MAX_COL}${MAX_ROW}`,
+    valueRenderOption: 'UNFORMATTED_VALUE',
+  });
+  const rows = data.values || [];
+  const start = parseStart(data.range);
+  const hIdx = locateHeader(rows, args.key_column);
+  if (hIdx === -1) throw new Error(`Could not find a header row containing "${args.key_column}" in tab "${sheetName}".`);
+  const header = rows[hIdx];
+  const keyCol = header.findIndex(c => normCell(c) === normCell(args.key_column));
+  let target = -1;
+  for (let i = hIdx + 1; i < rows.length; i++) {
+    if (keyMatch((rows[i] || [])[keyCol], args.key_value)) { target = i; break; }
+  }
+  if (target === -1) return { action: 'not_found', key: { column: args.key_column, value: args.key_value } };
+
+  // batchUpdate.deleteDimension needs the numeric sheetId, not the tab name —
+  // the values API is name-addressed, the structural API is id-addressed.
+  const tabs = await listSheetTabs(credentialId, spreadsheetId);
+  const tab = tabs.find(t => t.title === sheetName);
+  if (!tab) throw new Error(`Tab "${sheetName}" not found in this spreadsheet.`);
+  const sheetRowIndex = start.row + target - 1; // 0-based for the API
+
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId,
+    requestBody: {
+      requests: [{
+        deleteDimension: {
+          range: { sheetId: tab.sheetId, dimension: 'ROWS', startIndex: sheetRowIndex, endIndex: sheetRowIndex + 1 },
+        },
+      }],
+    },
+  });
+  return { action: 'deleted', row: sheetRowIndex + 1, key: { column: args.key_column, value: args.key_value } };
+}
+
+/**
+ * Op: clearSheet — wipe the data rows, keeping the header.
+ * Idempotent: clearing twice leaves the same sheet.
+ */
+async function clearSheet({ credentialId, spreadsheetId, sheetName, args = {} }) {
+  const sheets = await authedSheets(credentialId);
+  const { data: read } = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `'${sheetName}'!A1:${MAX_COL}${MAX_ROW}`,
+    valueRenderOption: 'UNFORMATTED_VALUE',
+  });
+  const rows = read.values || [];
+  const start = parseStart(read.range);
+  const hIdx = args.keep_header === false ? -1 : locateHeader(rows, null);
+  // Keep everything up to and including the header; clear from the next row.
+  const firstDataRow = start.row + hIdx + 1;
+  if (rows.length === 0) return { action: 'cleared', rowsCleared: 0 };
+  const lastRow = start.row + rows.length - 1;
+  if (lastRow < firstDataRow) return { action: 'cleared', rowsCleared: 0 };
+  await sheets.spreadsheets.values.clear({
+    spreadsheetId,
+    range: `'${sheetName}'!A${firstDataRow}:${MAX_COL}${lastRow}`,
+  });
+  return { action: 'cleared', rowsCleared: lastRow - firstDataRow + 1, keptHeader: hIdx !== -1 };
+}
+
+// Which ops may be retried after a failure.
+//
+// Google can APPLY a write and still fail the response (a timeout on the way
+// back). So a retry is only safe where doing it twice equals doing it once:
+//   append    -> duplicates the row
+//   deleteRow -> deletes a second, different row (rows shift up)
+// Both are excluded. update/upsert address a row BY KEY, so a repeat rewrites
+// the same cells with the same values.
+const IDEMPOTENT_OPS = new Set(['read', 'getRows', 'update', 'upsert', 'clearSheet']);
 
 /**
  * Dispatcher used by the agent engine. Looks at the tool's `config.ops` to
@@ -282,11 +525,48 @@ async function executeOp({ op, toolConfig, args }) {
     sheetName: toolConfig.sheet_name,
     args,
   };
-  if (op === 'read')   return read(ctx);
-  if (op === 'append') return append(ctx);
-  if (op === 'update') return update(ctx);
-  if (op === 'upsert') return upsert(ctx);
-  throw new Error(`Unknown Sheets op: ${op}`);
+  return runOp(op, ctx);
+}
+
+const OPS = { read, append, update, upsert, addRow, getRows, deleteRow, clearSheet };
+
+function isRetryable(err) {
+  // Rate limit / transient server errors only. A 400 (bad column name) or a 403
+  // (no access) will fail identically forever — retrying just delays the error
+  // and burns quota.
+  const status = err?.code || err?.response?.status;
+  return status === 429 || (status >= 500 && status < 600);
+}
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+/**
+ * Run one op, retrying ONLY when that is safe and useful.
+ *
+ * Two independent conditions, both required:
+ *   1. the op is idempotent (IDEMPOTENT_OPS) — a retry must not double-write;
+ *   2. the error is transient (429/5xx) — a retry must have a chance.
+ *
+ * Backoff is exponential with jitter. Three instant retries against a rate limit
+ * are just three failures: the whole point of hitting 429 is that you are going
+ * too fast.
+ */
+async function runOp(op, ctx, { retries = 2 } = {}) {
+  const fn = OPS[op];
+  if (!fn) throw new Error(`Unknown Sheets op: ${op}`);
+  const canRetry = IDEMPOTENT_OPS.has(op);
+  let lastErr;
+  for (let attempt = 0; attempt <= (canRetry ? retries : 0); attempt++) {
+    try {
+      return await fn(ctx);
+    } catch (err) {
+      lastErr = err;
+      if (!canRetry || !isRetryable(err) || attempt === retries) break;
+      // 500ms, 1s (+ up to 250ms jitter so parallel flows don't retry in lockstep)
+      await sleep(500 * Math.pow(2, attempt) + Math.floor(Math.random() * 250));
+    }
+  }
+  throw lastErr;
 }
 
 module.exports = {
@@ -296,5 +576,15 @@ module.exports = {
   append,
   update,
   upsert,
+  addRow,
+  getRows,
+  deleteRow,
+  clearSheet,
   executeOp,
+  runOp,
+  IDEMPOTENT_OPS,
+  // Exported for the polling trigger, which needs the same row/header
+  // arithmetic. Duplicating it would let the trigger and the ops disagree about
+  // where the header is.
+  _internals: { colLetter, normCell, digitsOnly, keyMatch, parseStart, locateHeader, MAX_COL, MAX_ROW },
 };

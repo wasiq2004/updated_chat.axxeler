@@ -12,10 +12,18 @@
 //
 // "admin-settings:<tab>" entries gate individual tabs within Admin Settings.
 
+// 'admin-settings:tags' is gone: tag CRUD moved to Lead Studio (the 'contacts'
+// page), where tags are actually applied, and the Settings → Tags tab was
+// deleted. The permission gated a screen that no longer exists — leaving it
+// would be a grant that silently does nothing.
+//
+// 'admin-settings:category' stays: category EDIT/DELETE is still there, and
+// deleting a category CASCADEs every tag in it. Only category CREATE moved
+// (inline from Manage Tags), because a tag can't exist without one.
 const PAGES = [
   'home', 'chats', 'contacts', 'pipelines', 'bulk-message', 'template-builder',
   'chatbot-builder', 'follow-ups', 'media-library', 'about',
-  'admin-settings:general', 'admin-settings:tags', 'admin-settings:category',
+  'admin-settings:general', 'admin-settings:category',
   'admin-settings:fields', 'admin-settings:whatsapp-accounts',
   'admin-settings:users', 'admin-settings:mcp',
 ];

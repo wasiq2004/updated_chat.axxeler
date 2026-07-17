@@ -9,7 +9,10 @@
 
 const pool = require('../db');
 
-const SUPPORTED_PROVIDERS = new Set(['anthropic', 'openai', 'groq']);
+// Derived from the LLM registry (see llm/providers.js). Was a byte-identical
+// copy of the Set in routes/agents.js — two places to forget instead of one.
+const { PROVIDER_IDS } = require('../llm/providers');
+const SUPPORTED_PROVIDERS = new Set(PROVIDER_IDS);
 
 // Lightweight typed error so routers can map status → HTTP code.
 class ApiError extends Error {

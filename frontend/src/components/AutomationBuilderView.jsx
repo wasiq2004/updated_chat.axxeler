@@ -3,6 +3,7 @@ import QRCode from "qrcode";
 import { api } from "../api.js";
 import AutomationExecutions from "./AutomationExecutions.jsx";
 import SearchableSelect from "./SearchableSelect.jsx";
+import { useSheetPicker, useSavedSheets, resolveSavedSheet } from "./SheetPicker.jsx";
 import { maskPhone, downloadJson, slugifyName } from "../constants.js";
 
 // Renders a scannable QR of a wa.me link and offers an SVG download. Used by the
@@ -477,6 +478,28 @@ export const getTriggerDisplay = (n) => {
   }
   if (tk === 'webhook') return { title: 'Trigger: Webhook', sub: 'Incoming HTTP POST webhook' };
   if (tk === 'apiEvent') return { title: 'Trigger: API Event', sub: `Event from ${n.integration || 'integration'}` };
+  if (tk === 'schedule') {
+    const WD = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    const time = n.timeOfDay || '09:00';
+    const mode = n.scheduleMode || 'daily';
+    let when = 'Every day';
+    if (mode === 'weekly') {
+      const days = Array.isArray(n.weekdays) ? n.weekdays : [];
+      when = days.length ? days.map(d => WD[d]).join(', ') : 'No days picked';
+    } else if (mode === 'monthly') {
+      const d = parseInt(n.dayOfMonth, 10) || 1;
+      when = `Day ${d} of each month`;
+    }
+    const who = n.audienceMode === 'sheet' ? 'each sheet row'
+      : n.audienceMode === 'once' ? 'once, no contact'
+      : 'matching contacts';
+    return { title: `Trigger: ${time} · ${when}`, sub: `${n.timezone || 'Asia/Kolkata'} · runs for ${who}` };
+  }
+  if (tk === 'sheetRow') {
+    const where = n.spreadsheetName ? `${n.spreadsheetName}${n.sheetName ? ` · ${n.sheetName}` : ''}` : 'no sheet picked';
+    const what = n.sheetWatch === 'updated' ? 'Row edited' : n.sheetWatch === 'both' ? 'Row added or edited' : 'Row added';
+    return { title: `Trigger: ${what}`, sub: where };
+  }
   return { title: n.title, sub: n.sub };
 };
 
@@ -1031,6 +1054,16 @@ const BLOCK_GROUPS = [
       defaults:{ triggerKind:"link", trackingCode:"", summary:"Trigger from a wa.me link scan" } },
     { name:"QR Scan", type:"trigger", icon:IC.qr, desc:"Contact scans a printed QR",
       defaults:{ triggerKind:"qr", prefilledMsg:"", summary:"Trigger from a QR code scan" } },
+    // Polled (~60s), not pushed: Sheets has no row-change webhook. The first
+    // poll baselines and fires nothing, so activating against an existing sheet
+    // doesn't blast an execution per row.
+    { name:"Sheet row added/updated", type:"trigger", icon:IC.api, desc:"A row changes in a Google Sheet",
+      defaults:{ triggerKind:"sheetRow", googleAccountId:"", spreadsheetId:"", sheetName:"", keyColumn:"", phoneColumn:"", sheetWatch:"added", summary:"Trigger when a Google Sheet row is added or updated" } },
+    // Runs on a clock, so it has no inbound message and no contact of its own —
+    // it resolves an AUDIENCE and starts one run per person. That's why there's
+    // no loop block: the fan-out is the loop, with per-contact error isolation.
+    { name:"On a schedule", type:"trigger", icon:IC.clock, desc:"Run at a set time, daily/weekly/monthly",
+      defaults:{ triggerKind:"schedule", scheduleMode:"daily", timeOfDay:"09:00", timezone:"Asia/Kolkata", weekdays:[1], dayOfMonth:1, audienceMode:"contacts", audienceTagIds:[], maxPerRun:100, summary:"Run this flow on a schedule" } },
     { name:"Tag Applied", type:"trigger", icon:IC.tag, desc:"A tag is added/removed",
       defaults:{ triggerKind:"tagApplied", tag:"", tagDirection:"added", fireOncePerTag:true, summary:"Trigger when a tag changes on a contact" } },
     { name:"Incoming Webhook", type:"trigger", icon:IC.api, desc:"External system POSTs to your URL",
@@ -1061,8 +1094,30 @@ const BLOCK_GROUPS = [
   { title:"API & Integrations", color:C.text3, items:[
     { name:"API call", type:"api", icon:IC.api, desc:"Call an external HTTP API / webhook" },
   ]},
+  // ONE node type with an `op` discriminator, not six types: they share the
+  // account → spreadsheet → tab picker and differ only in what they do with the
+  // mapped columns.
+  { title:"Google Sheets", color:C.text3, items:[
+    { name:"Add row", type:"sheets", icon:IC.api, desc:"Append a row to a sheet",
+      defaults:{ op:"addRow", mappings:[], summary:"Add a row to a Google Sheet" } },
+    { name:"Update row", type:"sheets", icon:IC.api, desc:"Find a row by a column value and update it",
+      defaults:{ op:"updateRow", mappings:[], keyColumn:"", keyValue:"", createIfMissing:false, summary:"Update a row in a Google Sheet" } },
+    { name:"Get rows", type:"sheets", icon:IC.api, desc:"Look a row up — branches Found / Not found",
+      defaults:{ op:"getRows", keyColumn:"", keyValue:"", maxRows:50, summary:"Look up rows in a Google Sheet" } },
+    { name:"Read range", type:"sheets", icon:IC.api, desc:"Read an A1 range as raw values",
+      defaults:{ op:"readRange", range:"", maxRows:50, summary:"Read a range from a Google Sheet" } },
+    { name:"Delete row", type:"sheets", icon:IC.trash, desc:"Remove the first row matching a column value",
+      defaults:{ op:"deleteRow", keyColumn:"", keyValue:"", summary:"Delete a row from a Google Sheet" } },
+    { name:"Clear sheet", type:"sheets", icon:IC.trash, desc:"Wipe the data rows, keeping the header",
+      defaults:{ op:"clearSheet", keepHeader:true, summary:"Clear a Google Sheet" } },
+  ]},
   { title:"AI", color:C.text3, items:[
     { name:"AI step", type:"ai", icon:IC.ai, desc:"Task-bound AI reply (Meta-compliant)" },
+    // The flow ENDS at this node — the agent owns the conversation afterwards.
+    // agentReplyNow defaults false: the flow has usually just sent its own
+    // message, and replying immediately would stack two messages back to back.
+    { name:"Handoff to AI Agent", type:"agentHandoff", icon:IC.agent, desc:"Hand the conversation to an AI agent, which then owns it",
+      defaults:{ agentId:"", agentBrief:"", agentReplyNow:false, summary:"Hand this conversation to an AI agent" } },
   ]},
   { title:"Workflows", color:C.text3, items:[
     { name:"Human Handoff", type:"handoff", icon:IC.agent, desc:"Assign the chat to a team member and stop the bot" },
@@ -1178,7 +1233,618 @@ const TemplatePreview = ({ template }) => {
 };
 
 
-const SettingsPanel = ({ node, nodes=[], edges=[], onUpdateNode=()=>{}, onDeleteNode=()=>{}, onDuplicateNode=()=>{}, onSaveAndClose=()=>{}, onToggleDisable=()=>{}, onDeleteButton=()=>{}, onSelectTemplate=()=>{}, onCreateTemplate=()=>{}, templates=[], teamMembers=[], tags=[], contactFields=[], otherAutomations=[], whatsappAccounts=[], assignableUsers=[], sampleContacts=[], embedded=false }) => {
+/* ── Saved sheet shortcut ─────────────────────────────────────────────────
+   Shared by the Sheets nodes and the sheet-row trigger. Picking one COPIES the
+   resolved ids onto the node — so deleting the library entry later can't break
+   this flow, and the manual account→spreadsheet→tab cascade below stays as the
+   escape hatch. */
+function SavedSheetShortcut({ node, onUpdateNode, extraReset = {} }) {
+  const { saved, loading } = useSavedSheets();
+  if (loading || saved.length === 0) return null;
+
+  // Which entry, if any, matches what this node currently points at. Compared on
+  // the ids, not on a stored reference — the node has no idea it came from the
+  // library, which is exactly what makes deleting an entry harmless.
+  const current = saved.find(s =>
+    String(s.googleAccountId) === String(node.googleAccountId)
+    && s.spreadsheetId === node.spreadsheetId
+    && s.sheetName === node.sheetName);
+
+  return (
+    <Field label="Saved sheet" hint="Pick a sheet someone already set up, instead of browsing for it.">
+      <Select
+        value={current ? String(current.id) : ''}
+        onChange={(e) => {
+          const entry = saved.find(s => String(s.id) === e.target.value);
+          if (!entry) return;
+          onUpdateNode(node.id, { ...resolveSavedSheet(entry), ...extraReset });
+        }}
+      >
+        <option value="">— Choose manually below —</option>
+        {saved.map(s => (
+          <option key={s.id} value={s.id}>
+            {s.name}{s.accountHealth === 'error' ? ' (needs reconnecting)' : ''}
+          </option>
+        ))}
+      </Select>
+      {current && (
+        <div style={{ fontSize:10, color:C.text3, marginTop:5, lineHeight:1.5 }}>
+          Using <strong style={{ color:C.text2 }}>{current.spreadsheetName || current.spreadsheetId}</strong> · {current.sheetName}.
+          This step keeps its own copy of that link — changing or deleting the saved sheet later
+          won’t change this step.
+        </div>
+      )}
+    </Field>
+  );
+}
+
+/* ── Sheet-row trigger fields ────────────────────────────────────────────── */
+/* ── Scheduled trigger fields ─────────────────────────────────────────────────
+   A schedule has no inbound message, so unlike every other trigger it must say
+   WHO the flow runs for. That's the audience picker; the backend starts one
+   execution per person in it. */
+const WEEKDAY_LABELS = [
+  { d: 1, label: 'Mon' }, { d: 2, label: 'Tue' }, { d: 3, label: 'Wed' },
+  { d: 4, label: 'Thu' }, { d: 5, label: 'Fri' }, { d: 6, label: 'Sat' }, { d: 0, label: 'Sun' },
+];
+// A short list beats a 400-entry <select> nobody scrolls. "Other" falls back to
+// a free-text IANA name.
+const TIMEZONE_CHOICES = [
+  'Asia/Kolkata', 'Asia/Dubai', 'Asia/Singapore', 'Europe/London',
+  'Europe/Berlin', 'America/New_York', 'America/Los_Angeles', 'UTC',
+];
+
+export function ScheduleTriggerFields({ node, onUpdateNode, tags = [] }) {
+  const mode = node.scheduleMode || 'daily';
+  const audience = node.audienceMode || 'contacts';
+  const weekdays = Array.isArray(node.weekdays) ? node.weekdays : [];
+  const tagIds = Array.isArray(node.audienceTagIds) ? node.audienceTagIds : [];
+  const dom = parseInt(node.dayOfMonth, 10) || 1;
+  const tz = node.timezone || 'Asia/Kolkata';
+  const tzIsPreset = TIMEZONE_CHOICES.includes(tz);
+
+  const { accounts, spreadsheets, tabs, headers, scopeMissing } = useSheetPicker({
+    googleAccountId: node.googleAccountId,
+    spreadsheetId: node.spreadsheetId,
+    sheetName: node.sheetName,
+  });
+
+  const toggleDay = (d) => {
+    const next = weekdays.includes(d) ? weekdays.filter(x => x !== d) : [...weekdays, d].sort();
+    onUpdateNode(node.id, { weekdays: next });
+  };
+  const toggleTag = (id) => {
+    const next = tagIds.includes(id) ? tagIds.filter(x => x !== id) : [...tagIds, id];
+    onUpdateNode(node.id, { audienceTagIds: next });
+  };
+
+  return (<>
+    <div style={{ background:C.innerBg, border:`1px solid ${C.inputBorder}`, borderRadius:10, padding:"11px 13px", marginBottom:14 }}>
+      <div style={{ fontSize:11, color:C.text2, lineHeight:1.55 }}>
+        Checked about every minute, so a 09:00 run starts within a minute of 09:00 — not to the second.
+        It runs <strong style={{ color:C.text1 }}>once per day at most</strong>, and turning it on after
+        today’s time has already passed waits for the next one rather than firing immediately.
+      </div>
+    </div>
+
+    <Field label="How often">
+      <Select value={mode} onChange={(e)=>onUpdateNode(node.id, { scheduleMode: e.target.value })}>
+        <option value="daily">Every day</option>
+        <option value="weekly">Certain days of the week</option>
+        <option value="monthly">Once a month</option>
+      </Select>
+    </Field>
+
+    {mode === 'weekly' && (
+      <Field label="Which days? *">
+        <div style={{ display:"flex", flexWrap:"wrap", gap:5 }}>
+          {WEEKDAY_LABELS.map(({ d, label }) => {
+            const on = weekdays.includes(d);
+            return (
+              <button key={d} type="button" onClick={()=>toggleDay(d)} aria-pressed={on}
+                style={{ padding:"5px 11px", borderRadius:7, fontSize:11, fontWeight:700, cursor:"pointer",
+                  border:`1px solid ${on ? C.brand : C.inputBorder}`,
+                  background: on ? C.brand : C.innerBg, color: on ? "#fff" : C.text2 }}>
+                {label}
+              </button>
+            );
+          })}
+        </div>
+        {weekdays.length === 0 && (
+          <div style={{ fontSize:10, color:C.red, marginTop:5, fontWeight:600 }}>
+            Pick at least one day — with none selected this never runs.
+          </div>
+        )}
+      </Field>
+    )}
+
+    {mode === 'monthly' && (
+      <Field label="Day of the month *"
+        hint="Months that are too short use their last day, so 31 still runs on Feb 28.">
+        <Select value={String(dom)} onChange={(e)=>onUpdateNode(node.id, { dayOfMonth: parseInt(e.target.value, 10) })}>
+          {Array.from({ length: 31 }, (_, i) => i + 1).map(d => <option key={d} value={d}>{d}</option>)}
+        </Select>
+        {dom > 28 && (
+          <div style={{ fontSize:10, color:C.text3, marginTop:5, lineHeight:1.5 }}>
+            February has no {dom}th — it will run on the last day of the month instead of skipping it.
+          </div>
+        )}
+      </Field>
+    )}
+
+    <Field label="At what time? *">
+      <Input type="time" value={node.timeOfDay || '09:00'}
+        onChange={(e)=>onUpdateNode(node.id, { timeOfDay: e.target.value })} />
+    </Field>
+
+    <Field label="In which timezone?"
+      hint="The time above is local to this zone. Daylight saving is handled for you.">
+      <Select value={tzIsPreset ? tz : '__other'}
+        onChange={(e)=>{ if (e.target.value !== '__other') onUpdateNode(node.id, { timezone: e.target.value }); }}>
+        {TIMEZONE_CHOICES.map(z => <option key={z} value={z}>{z.replace('_',' ')}</option>)}
+        <option value="__other">Other…</option>
+      </Select>
+      {!tzIsPreset && (
+        <Input value={tz} placeholder="Australia/Sydney" style={{ marginTop:6 }}
+          onChange={(e)=>onUpdateNode(node.id, { timezone: e.target.value })} />
+      )}
+    </Field>
+
+    <div style={{ height:1, background:C.inputBorder, margin:"16px 0 14px" }} />
+
+    <Field label="Who does it run for? *"
+      hint="A schedule has no incoming message, so it needs a list. The flow runs once per person, separately — one failure doesn't stop the rest.">
+      <Select value={audience} onChange={(e)=>onUpdateNode(node.id, { audienceMode: e.target.value })}>
+        <option value="contacts">Contacts with certain tags</option>
+        <option value="sheet">Every row of a Google Sheet</option>
+        <option value="once">Nobody — run the flow just once</option>
+      </Select>
+    </Field>
+
+    {audience === 'contacts' && (
+      <Field label="Which tags? *">
+        {tags.length === 0 ? (
+          <div style={{ fontSize:11, color:C.text3 }}>No tags exist yet — create some under Contacts.</div>
+        ) : (
+          <div style={{ display:"flex", flexWrap:"wrap", gap:5 }}>
+            {tags.map(t => {
+              const on = tagIds.includes(t.id);
+              return (
+                <button key={t.id} type="button" onClick={()=>toggleTag(t.id)} aria-pressed={on}
+                  style={{ padding:"5px 11px", borderRadius:7, fontSize:11, fontWeight:700, cursor:"pointer",
+                    border:`1px solid ${on ? C.brand : C.inputBorder}`,
+                    background: on ? C.brand : C.innerBg, color: on ? "#fff" : C.text2 }}>
+                  {t.name}
+                </button>
+              );
+            })}
+          </div>
+        )}
+        {tagIds.length === 0 && (
+          // Empty-filter-means-everyone is how a test schedule messages the
+          // entire contact list. Refuse rather than default.
+          <div style={{ fontSize:10, color:C.red, marginTop:5, fontWeight:600, lineHeight:1.5 }}>
+            Pick at least one tag. With none selected this won’t run — it will not fall back to “everyone”.
+          </div>
+        )}
+        {tagIds.length > 1 && (
+          <div style={{ fontSize:10, color:C.text3, marginTop:5, lineHeight:1.5 }}>
+            Contacts with <strong>any</strong> of these tags are included.
+          </div>
+        )}
+      </Field>
+    )}
+
+    {audience === 'sheet' && (<>
+      <SavedSheetShortcut node={node} onUpdateNode={onUpdateNode} extraReset={{ phoneColumn: '' }} />
+      <Field label="Google account *">
+        <Select value={node.googleAccountId || ''}
+          onChange={(e)=>onUpdateNode(node.id, { googleAccountId: e.target.value, spreadsheetId:'', sheetName:'', phoneColumn:'' })}
+          style={{ borderColor: node.googleAccountId ? C.inputBorder : C.red }}>
+          <option value="">— Pick an account —</option>
+          {accounts.map(a => <option key={a.id} value={a.id}>{a.accountLabel || a.account_label}</option>)}
+        </Select>
+      </Field>
+      {scopeMissing ? (
+        <div style={{ background:C.orangeBg, border:"1px solid rgba(245,158,11,.28)", borderRadius:10, padding:"11px 13px", marginBottom:14 }}>
+          <div style={{ fontSize:12, fontWeight:700, color:C.orangeText, marginBottom:3 }}>Reconnect this Google account</div>
+          <div style={{ fontSize:11, color:C.text2, lineHeight:1.5 }}>
+            It was connected without permission to list your spreadsheets. Reconnect it under
+            Settings → Integrations → Google.
+          </div>
+        </div>
+      ) : (<>
+        <Field label="Spreadsheet *">
+          <Select value={node.spreadsheetId || ''}
+            onChange={(e)=>{
+              const sel = spreadsheets.find(s => s.id === e.target.value);
+              onUpdateNode(node.id, { spreadsheetId: e.target.value, spreadsheetName: sel?.name || '', sheetName:'', phoneColumn:'' });
+            }}
+            disabled={!node.googleAccountId}
+            style={{ borderColor: node.spreadsheetId ? C.inputBorder : C.red }}>
+            <option value="">— Pick a spreadsheet —</option>
+            {spreadsheets.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </Select>
+        </Field>
+        <Field label="Tab *">
+          <Select value={node.sheetName || ''}
+            onChange={(e)=>onUpdateNode(node.id, { sheetName: e.target.value, phoneColumn:'' })}
+            disabled={!node.spreadsheetId}
+            style={{ borderColor: node.sheetName ? C.inputBorder : C.red }}>
+            <option value="">— Pick a tab —</option>
+            {tabs.map(t => <option key={t.sheetId} value={t.title}>{t.title}</option>)}
+          </Select>
+        </Field>
+      </>)}
+      <Field label="Which column has the phone number?"
+        hint="Needed for any step that messages someone. Leave blank for sheet-only or API-only flows.">
+        <Select value={node.phoneColumn || ''}
+          onChange={(e)=>onUpdateNode(node.id, { phoneColumn: e.target.value })}
+          disabled={headers.length === 0}>
+          <option value="">— None (no messaging steps) —</option>
+          {headers.map(h => <option key={h} value={h}>{h}</option>)}
+        </Select>
+      </Field>
+      {headers.length > 0 && (
+        <Field label="Available variables" hint="Every column of the row being processed.">
+          <div style={{ display:"flex", flexWrap:"wrap", gap:5 }}>
+            {headers.map(h => (
+              <code key={h} style={{ fontFamily:"'Geist Mono'", fontSize:10.5, padding:"3px 7px", borderRadius:5, background:C.innerBg, border:`1px solid ${C.inputBorder}`, color:C.brandDark }}>
+                {`{{${h}}}`}
+              </code>
+            ))}
+          </div>
+        </Field>
+      )}
+    </>)}
+
+    {audience === 'once' && (
+      <Alert kind="warn">
+        With no contact, any Send Message step in this flow will fail — there’s nobody to send to.
+        This mode is for flows that only touch sheets or call an API.
+      </Alert>
+    )}
+
+    {audience !== 'once' && (
+      <Field label="Never message more than"
+        hint="A safety cap. If the audience is bigger, the extra people are skipped and a warning is logged — nothing is queued for later.">
+        <Select value={String(parseInt(node.maxPerRun, 10) || 100)}
+          onChange={(e)=>onUpdateNode(node.id, { maxPerRun: parseInt(e.target.value, 10) })}>
+          {[10, 50, 100, 250, 500].map(n => <option key={n} value={n}>{n} people per run</option>)}
+        </Select>
+      </Field>
+    )}
+
+    {audience !== 'once' && (
+      <Alert kind="warn">
+        A scheduled message almost always lands outside WhatsApp’s 24-hour window, where only an
+        approved template can be delivered. Use a template message step unless the person messaged
+        you in the last 24 hours.
+      </Alert>
+    )}
+  </>);
+}
+
+function SheetRowTriggerFields({ node, onUpdateNode }) {
+  const { accounts, spreadsheets, tabs, headers, scopeMissing, headerError } = useSheetPicker({
+    googleAccountId: node.googleAccountId,
+    spreadsheetId: node.spreadsheetId,
+    sheetName: node.sheetName,
+  });
+  return (<>
+    <div style={{ background:C.innerBg, border:`1px solid ${C.inputBorder}`, borderRadius:10, padding:"11px 13px", marginBottom:14 }}>
+      <div style={{ fontSize:11, color:C.text2, lineHeight:1.55 }}>
+        Google Sheets can’t notify us when a row changes, so this <strong style={{ color:C.text1 }}>checks about every minute</strong>.
+        The first check just records what’s already there and fires nothing — turning this on
+        against an existing sheet won’t run your flow for every existing row.
+      </div>
+    </div>
+
+    <SavedSheetShortcut node={node} onUpdateNode={onUpdateNode} extraReset={{ keyColumn: '', phoneColumn: '' }} />
+
+    <Field label="Google account *">
+      <Select value={node.googleAccountId || ''}
+        onChange={(e) => onUpdateNode(node.id, { googleAccountId: e.target.value, spreadsheetId: '', sheetName: '', keyColumn: '', phoneColumn: '' })}
+        style={{ borderColor: node.googleAccountId ? C.inputBorder : C.red }}>
+        <option value="">— Pick an account —</option>
+        {accounts.map(a => <option key={a.id} value={a.id}>{a.accountLabel || a.account_label}</option>)}
+      </Select>
+    </Field>
+
+    {scopeMissing ? (
+      <div style={{ background:C.orangeBg, border:"1px solid rgba(245,158,11,.28)", borderRadius:10, padding:"11px 13px", marginBottom:14 }}>
+        <div style={{ fontSize:12, fontWeight:700, color:C.orangeText, marginBottom:3 }}>Reconnect this Google account</div>
+        <div style={{ fontSize:11, color:C.text2, lineHeight:1.5 }}>
+          It was connected without permission to list your spreadsheets. Reconnect it under
+          Settings → Integrations → Google.
+        </div>
+      </div>
+    ) : (
+      <>
+        <Field label="Spreadsheet *">
+          <Select value={node.spreadsheetId || ''}
+            onChange={(e) => {
+              const sel = spreadsheets.find(s => s.id === e.target.value);
+              onUpdateNode(node.id, { spreadsheetId: e.target.value, spreadsheetName: sel?.name || '', sheetName: '', keyColumn: '', phoneColumn: '' });
+            }}
+            disabled={!node.googleAccountId}
+            style={{ borderColor: node.spreadsheetId ? C.inputBorder : C.red }}>
+            <option value="">— Pick a spreadsheet —</option>
+            {spreadsheets.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </Select>
+        </Field>
+        <Field label="Tab *">
+          <Select value={node.sheetName || ''}
+            onChange={(e) => onUpdateNode(node.id, { sheetName: e.target.value, keyColumn: '', phoneColumn: '' })}
+            disabled={!node.spreadsheetId}
+            style={{ borderColor: node.sheetName ? C.inputBorder : C.red }}>
+            <option value="">— Pick a tab —</option>
+            {tabs.map(t => <option key={t.sheetId} value={t.title}>{t.title}</option>)}
+          </Select>
+        </Field>
+      </>
+    )}
+
+    {headerError && (
+      <div style={{ fontSize:10.5, color:C.red, marginTop:-8, marginBottom:12, fontWeight:600, lineHeight:1.5 }}>{headerError}</div>
+    )}
+
+    <Field label="Fire on">
+      <Select value={node.sheetWatch || 'added'} onChange={(e)=>onUpdateNode(node.id, { sheetWatch: e.target.value })}>
+        <option value="added">New rows only</option>
+        <option value="updated">Edited rows only</option>
+        <option value="both">New and edited rows</option>
+      </Select>
+    </Field>
+
+    <Field label="Which column identifies a row? *"
+      hint="Pick a column whose value is UNIQUE per row — an ID, or the phone number. Not the row number: sorting the sheet renumbers everything.">
+      <Select value={node.keyColumn || ''}
+        onChange={(e)=>onUpdateNode(node.id, { keyColumn: e.target.value })}
+        disabled={headers.length === 0}
+        style={{ borderColor: node.keyColumn ? C.inputBorder : C.red }}>
+        <option value="">— Pick a column —</option>
+        {headers.map(h => <option key={h} value={h}>{h}</option>)}
+      </Select>
+      {!node.keyColumn && <div style={{ fontSize:10, color:C.red, marginTop:5, fontWeight:600 }}>Required — without it we can’t tell which row changed</div>}
+      {node.keyColumn && (
+        // The duplicate-key limitation, said out loud where the choice is made
+        // rather than discovered later as mystery double-fires.
+        <div style={{ fontSize:10, color:C.text3, marginTop:5, lineHeight:1.5 }}>
+          If two rows share the same value here, re-sorting the sheet can fire this flow for both
+          of them. A genuinely unique column avoids that.
+        </div>
+      )}
+    </Field>
+
+    <Field label="Which column has the phone number?"
+      hint="Needed for any step that messages the contact. Leave blank for sheet-only or API-only flows.">
+      <Select value={node.phoneColumn || ''}
+        onChange={(e)=>onUpdateNode(node.id, { phoneColumn: e.target.value })}
+        disabled={headers.length === 0}>
+        <option value="">— None (no messaging steps) —</option>
+        {headers.map(h => <option key={h} value={h}>{h}</option>)}
+      </Select>
+      {!node.phoneColumn && (
+        <div style={{ fontSize:10, color:C.orangeText, marginTop:5, fontWeight:600, lineHeight:1.5 }}>
+          Without a phone column, any Send Message step in this flow will fail — there’s no one to send to.
+        </div>
+      )}
+    </Field>
+
+    {headers.length > 0 && (
+      <Field label="Available variables" hint="Every column of the changed row.">
+        <div style={{ display:"flex", flexWrap:"wrap", gap:5 }}>
+          {headers.map(h => (
+            <code key={h} style={{ fontFamily:"'Geist Mono'", fontSize:10.5, padding:"3px 7px", borderRadius:5, background:C.innerBg, border:`1px solid ${C.inputBorder}`, color:C.brandDark }}>
+              {`{{${h}}}`}
+            </code>
+          ))}
+        </div>
+      </Field>
+    )}
+
+    <Alert kind="warn">
+      A scheduled or sheet-driven message usually lands outside WhatsApp’s 24-hour window, where
+      only an approved template can be delivered. Use a template message step unless the customer
+      has messaged you in the last 24 hours.
+    </Alert>
+  </>);
+}
+
+/* ── Google Sheets node fields ───────────────────────────────────────────────
+   A separate component because it needs hooks (the account→spreadsheet→tab→
+   columns cascade), and SettingsPanel's body is one long if/else chain — hooks
+   can't live inside a conditional branch. */
+const SHEETS_OPS = [
+  { value: 'addRow',     label: 'Add row' },
+  { value: 'updateRow',  label: 'Update row' },
+  { value: 'getRows',    label: 'Get rows (branches Found / Not found)' },
+  { value: 'readRange',  label: 'Read range' },
+  { value: 'deleteRow',  label: 'Delete row' },
+  { value: 'clearSheet', label: 'Clear sheet' },
+];
+
+function SheetsNodeFields({ node, onUpdateNode, onSaveAndClose, onDuplicateNode, onDeleteNode }) {
+  const op = node.op || 'addRow';
+  const { accounts, spreadsheets, tabs, headers, scopeMissing, headerError } = useSheetPicker({
+    googleAccountId: node.googleAccountId,
+    spreadsheetId: node.spreadsheetId,
+    sheetName: node.sheetName,
+  });
+  const mappings = Array.isArray(node.mappings) ? node.mappings : [];
+  const needsKey = op === 'updateRow' || op === 'deleteRow' || op === 'getRows';
+  const needsMappings = op === 'addRow' || op === 'updateRow';
+
+  const setMapping = (i, patch) => onUpdateNode(node.id, n => {
+    const next = [...(n.mappings || [])];
+    next[i] = { ...next[i], ...patch };
+    return { mappings: next };
+  });
+
+  return (<>
+    <Field label="What should this step do?">
+      <Select value={op} onChange={(e) => onUpdateNode(node.id, { op: e.target.value })}>
+        {SHEETS_OPS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+      </Select>
+    </Field>
+
+    <SavedSheetShortcut node={node} onUpdateNode={onUpdateNode} />
+
+    <Field label="Google account *">
+      <Select value={node.googleAccountId || ''}
+        onChange={(e) => onUpdateNode(node.id, { googleAccountId: e.target.value, spreadsheetId: '', sheetName: '' })}
+        style={{ borderColor: node.googleAccountId ? C.inputBorder : C.red }}>
+        <option value="">— Pick an account —</option>
+        {accounts.map(a => <option key={a.id} value={a.id}>{a.accountLabel || a.account_label}</option>)}
+      </Select>
+      {accounts.length === 0 && (
+        <div style={{ fontSize:10, color:C.text3, marginTop:5 }}>
+          No Google account connected — add one under Settings → Integrations → Google.
+        </div>
+      )}
+    </Field>
+
+    {scopeMissing ? (
+      // Detected, not rendered as a mysteriously empty dropdown. Listing a
+      // user's sheets needs the Drive read scope; without it the picker can
+      // never populate, however long you wait.
+      <div style={{ background:C.orangeBg, border:"1px solid rgba(245,158,11,.28)", borderRadius:10, padding:"11px 13px", marginBottom:14 }}>
+        <div style={{ fontSize:12, fontWeight:700, color:C.orangeText, marginBottom:3 }}>Reconnect this Google account</div>
+        <div style={{ fontSize:11, color:C.text2, lineHeight:1.5 }}>
+          It was connected without permission to list your spreadsheets, so the picker below can’t
+          show them. Reconnect it under Settings → Integrations → Google.
+        </div>
+      </div>
+    ) : (
+      <>
+        <Field label="Spreadsheet *">
+          <Select value={node.spreadsheetId || ''}
+            onChange={(e) => {
+              const sel = spreadsheets.find(s => s.id === e.target.value);
+              onUpdateNode(node.id, { spreadsheetId: e.target.value, spreadsheetName: sel?.name || '', sheetName: '' });
+            }}
+            disabled={!node.googleAccountId}
+            style={{ borderColor: node.spreadsheetId ? C.inputBorder : C.red }}>
+            <option value="">— Pick a spreadsheet —</option>
+            {spreadsheets.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </Select>
+        </Field>
+
+        <Field label="Tab *">
+          <Select value={node.sheetName || ''}
+            onChange={(e) => onUpdateNode(node.id, { sheetName: e.target.value })}
+            disabled={!node.spreadsheetId}
+            style={{ borderColor: node.sheetName ? C.inputBorder : C.red }}>
+            <option value="">— Pick a tab —</option>
+            {tabs.map(t => <option key={t.sheetId} value={t.title}>{t.title}</option>)}
+          </Select>
+        </Field>
+      </>
+    )}
+
+    {headerError && (
+      <div style={{ fontSize:10.5, color:C.red, marginTop:-8, marginBottom:12, fontWeight:600, lineHeight:1.5 }}>
+        {headerError}
+      </div>
+    )}
+
+    {needsKey && (
+      <>
+        <Field label="Find the row by" hint="The column that identifies which row to act on.">
+          <Select value={node.keyColumn || ''}
+            onChange={(e) => onUpdateNode(node.id, { keyColumn: e.target.value })}
+            disabled={headers.length === 0}
+            style={{ borderColor: node.keyColumn ? C.inputBorder : C.red }}>
+            <option value="">— Pick a column —</option>
+            {headers.map(h => <option key={h} value={h}>{h}</option>)}
+          </Select>
+        </Field>
+        <Field label="matching value" hint="Supports {{variables}}.">
+          <Input value={node.keyValue || ''}
+            onChange={(e) => onUpdateNode(node.id, { keyValue: e.target.value })}
+            placeholder="{{contact_number}}" />
+        </Field>
+      </>
+    )}
+
+    {op === 'updateRow' && (
+      <Field label="If no row matches">
+        <div style={{ display:"flex", alignItems:"center", gap:10, padding:"9px 11px", border:`1.5px solid ${C.inputBorder}`, borderRadius:8, background:C.innerBg }}>
+          <Toggle value={!!node.createIfMissing} onChange={(v)=>onUpdateNode(node.id, { createIfMissing: v })} />
+          <div style={{ flex:1 }}>
+            <div style={{ fontSize:12, fontWeight:700, color:C.text1 }}>
+              {node.createIfMissing ? "Add it as a new row" : "Do nothing"}
+            </div>
+            <div style={{ fontSize:10.5, color:C.text3, lineHeight:1.45, marginTop:2 }}>
+              {node.createIfMissing
+                ? "A typo in the matching value will silently create a duplicate row instead of updating."
+                : "Safer: a miss stays a miss, and the step reports “not found”."}
+            </div>
+          </div>
+        </div>
+      </Field>
+    )}
+
+    {op === 'readRange' && (
+      <Field label="Range" hint="A1 notation, e.g. A1:D20. Leave blank for the whole tab.">
+        <Input value={node.range || ''} onChange={(e)=>onUpdateNode(node.id, { range: e.target.value })} placeholder="A1:D20" />
+      </Field>
+    )}
+
+    {op === 'clearSheet' && (
+      <Field label="Header row">
+        <div style={{ display:"flex", alignItems:"center", gap:10, padding:"9px 11px", border:`1.5px solid ${C.inputBorder}`, borderRadius:8, background:C.innerBg }}>
+          <Toggle value={node.keepHeader !== false} onChange={(v)=>onUpdateNode(node.id, { keepHeader: v })} />
+          <div style={{ fontSize:12, fontWeight:700, color:C.text1 }}>
+            {node.keepHeader !== false ? "Keep the header row" : "Clear everything"}
+          </div>
+        </div>
+      </Field>
+    )}
+
+    {needsMappings && (
+      <Field label="Columns" hint="Map each column to a value. {{variables}} are filled in at run time.">
+        {headers.length === 0 ? (
+          <div style={{ fontSize:11, color:C.text3, padding:"8px 0" }}>
+            Pick a spreadsheet and tab first — then its columns appear here.
+          </div>
+        ) : (
+          <>
+            {mappings.map((m, i) => (
+              <div key={i} style={{ display:"flex", gap:6, marginBottom:6 }}>
+                <Select value={m.column || ''} onChange={(e)=>setMapping(i, { column: e.target.value })} style={{ flex:1 }}>
+                  <option value="">— Column —</option>
+                  {headers.map(h => <option key={h} value={h}>{h}</option>)}
+                </Select>
+                <Input value={m.value || ''} onChange={(e)=>setMapping(i, { value: e.target.value })}
+                  placeholder="{{name}}" style={{ flex:1.3 }} />
+                <IconBtn danger title="Remove" onClick={()=>onUpdateNode(node.id, n => ({ mappings: (n.mappings||[]).filter((_,x)=>x!==i) }))}>
+                  {IC.trash(13)}
+                </IconBtn>
+              </div>
+            ))}
+            <Btn kind="ghost" icon={IC.plus ? IC.plus(12) : null}
+              onClick={()=>onUpdateNode(node.id, n => ({ mappings: [...(n.mappings||[]), { column:'', value:'' }] }))}>
+              Add a column
+            </Btn>
+            {mappings.length === 0 && (
+              <div style={{ fontSize:10, color:C.red, marginTop:5, fontWeight:600 }}>Map at least one column</div>
+            )}
+          </>
+        )}
+      </Field>
+    )}
+
+    <div style={{ display:"flex", gap:6, marginTop:14 }}>
+      <Btn kind="primary" style={{ flex:1, justifyContent:"center" }} onClick={onSaveAndClose}>Save</Btn>
+      <Btn kind="ghost" icon={IC.copy(13)} onClick={()=>onDuplicateNode(node.id)}>Duplicate</Btn>
+      <Btn kind="danger" icon={IC.trash(13)} onClick={()=>onDeleteNode(node.id)}>Delete</Btn>
+    </div>
+  </>);
+}
+
+const SettingsPanel = ({ node, nodes=[], edges=[], onUpdateNode=()=>{}, onDeleteNode=()=>{}, onDuplicateNode=()=>{}, onSaveAndClose=()=>{}, onToggleDisable=()=>{}, onDeleteButton=()=>{}, onSelectTemplate=()=>{}, onCreateTemplate=()=>{}, templates=[], teamMembers=[], tags=[], contactFields=[], otherAutomations=[], whatsappAccounts=[], agents=[], assignableUsers=[], sampleContacts=[], embedded=false }) => {
   const [editingTitle, setEditingTitle] = useState(false);
   const [subflowSearch, setSubflowSearch] = useState("");
   const [showExample, setShowExample] = useState(true);
@@ -2375,6 +3041,14 @@ const SettingsPanel = ({ node, nodes=[], edges=[], onUpdateNode=()=>{}, onDelete
       </>);
     }
 
+    else if (tk === "sheetRow") {
+      kindFields = <SheetRowTriggerFields node={node} onUpdateNode={onUpdateNode} />;
+    }
+
+    else if (tk === "schedule") {
+      kindFields = <ScheduleTriggerFields node={node} onUpdateNode={onUpdateNode} tags={tags} />;
+    }
+
     else if (tk === "webhook") {
       const secret = node.webhookSecret || "";
       const origin = typeof window !== "undefined" ? window.location.origin : "";
@@ -2505,6 +3179,8 @@ const SettingsPanel = ({ node, nodes=[], edges=[], onUpdateNode=()=>{}, onDelete
           <option value="newContact">New Contact — first-time message from a new contact</option>
           <option value="link">wa.me Link — contact opens a click-to-chat link</option>
           <option value="qr">QR Scan — contact scans a printed QR code</option>
+          <option value="schedule">Schedule — run at a set time, daily/weekly/monthly</option>
+          <option value="sheetRow">Sheet Row — a row is added/edited in a Google Sheet</option>
           <option value="tagApplied">Tag Applied — a tag is added/removed on a contact</option>
           <option value="webhook">Webhook — an external system POSTs to your URL</option>
           <option value="apiEvent">Integration Event — a filtered event from an integration webhook</option>
@@ -2663,6 +3339,110 @@ const SettingsPanel = ({ node, nodes=[], edges=[], onUpdateNode=()=>{}, onDelete
       </div>
     </>);
   }
+
+  else if (node.type === "agentHandoff") {
+    const agentId      = node.agentId || "";
+    const agentBrief   = node.agentBrief || "";
+    const agentReplyNow= !!node.agentReplyNow;
+    const chosen       = agents.find(a => String(a.id) === String(agentId));
+    // The agent replies from its OWN number. A binding on a different account
+    // would answer the customer from the wrong number — the engine refuses it at
+    // runtime; flag it here so it's caught while building, not in a failed run.
+    //
+    // The flow's numbers come from the trigger node's account scoping; an empty
+    // triggerAccounts means "any connected number", in which case we can't know
+    // and don't guess.
+    const triggerNode  = nodes.find(n => n.type === 'trigger');
+    // triggerAccounts holds DISPLAY PHONE NUMBERS, not ids — the checkbox above
+    // stores acc.displayPhoneNumber. Looking them up by id matches nothing, so
+    // this list came back empty and the wrong-number warning below could never
+    // fire. They're already the numbers; just normalise to digits.
+    const scopedPhones = Array.isArray(triggerNode?.triggerAccounts) ? triggerNode.triggerAccounts : [];
+    const triggerWaNumbers = scopedPhones.map(p => String(p || '').replace(/\D/g, '')).filter(Boolean);
+    const wrongNumber  = !!(chosen && triggerWaNumbers.length > 0
+      && chosen.waNumberDigits
+      && !triggerWaNumbers.includes(String(chosen.waNumberDigits)));
+    content = (<>
+      <div style={{ background:C.innerBg, border:`1px solid ${C.inputBorder}`, borderRadius:10, padding:"11px 13px", marginBottom:14 }}>
+        <div style={{ fontSize:11, color:C.text2, lineHeight:1.55 }}>
+          The agent takes over this conversation and answers every message from here on.
+          <strong style={{ color:C.text1 }}> This flow ends at this step.</strong> The agent
+          already sees the whole conversation — use the brief for what the flow worked out
+          that the transcript can’t show.
+        </div>
+      </div>
+
+      <Field label="Agent *" hint="It must be bound to the same WhatsApp number this flow runs on.">
+        <Select value={agentId} onChange={(e)=>onUpdateNode(node.id, { agentId: e.target.value })}
+          style={{ borderColor: agentId ? C.inputBorder : C.red }}>
+          <option value="">— Pick an agent —</option>
+          {agents.map(a => (
+            <option key={a.id} value={a.id}>
+              {a.name}{a.status === 'draft' ? ' (draft — cannot run)' : ''}
+            </option>
+          ))}
+        </Select>
+        {!agentId && <div style={{ fontSize:10, color:C.red, marginTop:5, fontWeight:600 }}>Pick an agent — this step does nothing without one</div>}
+        {chosen?.status === 'draft' && (
+          <div style={{ fontSize:10, color:C.red, marginTop:5, fontWeight:600 }}>
+            This agent is a draft. Finish and activate it, or the handoff will fail at runtime.
+          </div>
+        )}
+        {wrongNumber && (
+          <div style={{ fontSize:10, color:C.red, marginTop:5, fontWeight:600 }}>
+            This agent answers from a different WhatsApp number than this flow — the customer
+            would get a reply from the wrong number. The handoff will be refused.
+          </div>
+        )}
+        {agents.length === 0 && (
+          <div style={{ fontSize:10, color:C.text3, marginTop:5 }}>
+            No agents yet — create one under AI Agents first.
+          </div>
+        )}
+      </Field>
+
+      <Field label="Brief for the agent"
+        hint="What this flow CONCLUDED — not a recap. The transcript is inherited automatically.">
+        <Textarea
+          rows={4}
+          value={agentBrief}
+          onChange={(e)=>onUpdateNode(node.id, { agentBrief: e.target.value })}
+          placeholder="e.g. Qualified {{name}} as an enterprise lead. Budget confirmed above ₹5L. They want a demo this week."
+        />
+        <div style={{ fontSize:10, color:C.text3, marginTop:5 }}>
+          <code style={{ fontFamily:"'Geist Mono'", fontSize:10, color:C.brandDark }}>{"{{variables}}"}</code> are filled in before the agent sees it.
+        </div>
+      </Field>
+
+      <Field label="When should the agent speak?">
+        <div style={{ display:"flex", alignItems:"center", gap:10, padding:"9px 11px", border:`1.5px solid ${C.inputBorder}`, borderRadius:8, background:C.innerBg }}>
+          <Toggle value={agentReplyNow} onChange={(v)=>onUpdateNode(node.id, { agentReplyNow: v })} />
+          <div style={{ flex:1 }}>
+            <div style={{ fontSize:12, fontWeight:700, color:C.text1 }}>
+              {agentReplyNow ? "Reply to this message now" : "Wait for their next message"}
+            </div>
+            <div style={{ fontSize:10.5, color:C.text3, lineHeight:1.45, marginTop:2 }}>
+              {agentReplyNow
+                ? "The agent answers the message that triggered this flow. If this flow already sent a message, the customer gets two in a row."
+                : "The agent stays quiet until the customer writes again. Safer when this flow just sent its own message."}
+            </div>
+          </div>
+        </div>
+      </Field>
+
+      <div style={{ display:"flex", gap:6, marginTop:14 }}>
+        <Btn kind="primary" style={{ flex:1, justifyContent:"center" }} onClick={onSaveAndClose}>Save</Btn>
+        <Btn kind="ghost" icon={IC.copy(13)} onClick={()=>onDuplicateNode(node.id)}>Duplicate</Btn>
+        <Btn kind="danger" icon={IC.trash(13)} onClick={()=>onDeleteNode(node.id)}>Delete</Btn>
+      </div>
+    </>);
+  }
+
+  else if (node.type === "sheets") {
+    content = <SheetsNodeFields node={node} onUpdateNode={onUpdateNode}
+      onSaveAndClose={onSaveAndClose} onDuplicateNode={onDuplicateNode} onDeleteNode={onDeleteNode} />;
+  }
+
   else if (node.type === "action") {
     const actions = node.actions || [];
     const updateAction = (idx, patch) => onUpdateNode(node.id, n => ({
@@ -3876,6 +4656,7 @@ const AutomationBuilderView = ({ automation, onBack, onSave, onToggleStatus, act
   const [contactFields,   setContactFields]   = useState([]);
   const [otherAutomations, setOtherAutomations] = useState([]);
   const [whatsappAccounts, setWhatsappAccounts] = useState([]);
+  const [agents, setAgents] = useState([]);
   const [assignableUsers, setAssignableUsers] = useState([]);
   const [sampleContacts,  setSampleContacts]  = useState([]);
   const [loading,         setLoading]         = useState(true);
@@ -3909,6 +4690,26 @@ const AutomationBuilderView = ({ automation, onBack, onSave, onToggleStatus, act
         setOtherAutomations((flows || []).filter(f => f.id !== automation?.id));
         setWhatsappAccounts(accs || []);
         setAssignableUsers(staff);
+
+        // AI agents, for the "Handoff to AI Agent" node's picker. Non-fatal: if
+        // it fails the picker just says there are none, rather than blanking the
+        // whole builder.
+        try {
+          const ags = await api.agents.list().catch(() => []);
+          if (alive) {
+            // Pre-resolve each agent's own WhatsApp number so the inspector can
+            // warn about a cross-account binding without another lookup. The
+            // agent replies from ITS number, so a mismatch means the customer
+            // gets answered from the wrong one.
+            const byId = new Map((accs || []).map(a => [String(a.id), String(a.displayPhoneNumber || '').replace(/\D/g, '')]));
+            setAgents((ags || []).map(a => ({
+              id: a.id,
+              name: a.name,
+              status: a.status,
+              waNumberDigits: byId.get(String(a.waAccountId)) || '',
+            })));
+          }
+        } catch { /* leave the list empty */ }
 
         // Sample contacts for the Condition node's "Test with a sample contact".
         // Non-fatal: if it fails the selector just shows "no contacts available".
@@ -4582,6 +5383,7 @@ const AutomationBuilderView = ({ automation, onBack, onSave, onToggleStatus, act
               contactFields={contactFields}
               otherAutomations={otherAutomations}
               whatsappAccounts={whatsappAccounts}
+              agents={agents}
               assignableUsers={assignableUsers}
               sampleContacts={sampleContacts}
             />

@@ -9,7 +9,7 @@ import AgentToolsList from './AgentToolsList.jsx';
 import AgentRunsViewer from './AgentRunsViewer.jsx';
 import AgentLivePreview from './AgentLivePreview.jsx';
 import AgentMediaGroups from './AgentMediaGroups.jsx';
-import { modelsForProvider, providerDisplay } from './modelCatalog.js';
+import { modelsForProvider, providerDisplay, defaultModelFor, useProviderCatalog } from './modelCatalog.js';
 
 const BLANK = {
   name: '',
@@ -40,6 +40,9 @@ const BLANK = {
 export default function AgentEditor({ agentId, waAccounts, user, navigate, onDone, onCancel }) {
   const isCreate = agentId == null;
   const [form, setForm] = useState(BLANK);
+  // Sticky once chosen: switching to a custom model id must survive the catalog
+  // re-render, so it can't be derived from the form alone.
+  const [customModel, setCustomModel] = useState(false);
   const [aiModels, setAiModels] = useState([]);
   const [tools, setTools] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -106,7 +109,19 @@ export default function AgentEditor({ agentId, waAccounts, user, navigate, onDon
   // demote a working agent to a draft.
   const selectedModelRow = aiModels.find(m => String(m.id) === String(form.aiModelId))
     || (form.aiModelId && form.aiProvider ? { id: form.aiModelId, provider: form.aiProvider, label: null } : null);
+  // Loads the server-owned provider catalog. Without it the model dropdown is
+  // empty — modelsForProvider() reads its cache.
+  const { loading: catalogLoading } = useProviderCatalog();
   const modelOptions = modelsForProvider(selectedModelRow?.provider);
+  // An agent already saved with a model that isn't in the catalog (a custom id,
+  // or one the provider retired) must show the text input, or opening the editor
+  // would silently blank their model on the next save.
+  //
+  // The catalogLoading guard matters: options are [] until the fetch lands, so
+  // without it every agent would flash into custom mode on open.
+  const modelIsKnown = modelOptions.some(m => m.value === form.llmModel);
+  const showCustomModel = customModel
+    || (!catalogLoading && !!form.llmModel && modelOptions.length > 0 && !modelIsKnown);
   const hasModelSelected = !!(form.aiModelId && form.llmModel);
   // Only treat the workspace as "no provider connected" when the registry is
   // genuinely empty AND this agent isn't already bound to one.
@@ -121,8 +136,10 @@ export default function AgentEditor({ agentId, waAccounts, user, navigate, onDon
   // other provider).
   const setAiModelId = (id) => {
     const row = aiModels.find(m => String(m.id) === String(id));
-    const first = modelsForProvider(row?.provider)[0]?.value || '';
-    setForm(f => ({ ...f, aiModelId: id, llmModel: first }));
+    // Prefer the provider's declared default over "whatever is first in the
+    // list" — the catalog now says which model it actually recommends.
+    const next = defaultModelFor(row?.provider) || modelsForProvider(row?.provider)[0]?.value || '';
+    setForm(f => ({ ...f, aiModelId: id, llmModel: next }));
   };
 
   // Build the create/update payload from the form. `status` is derived: an
@@ -449,12 +466,43 @@ export default function AgentEditor({ agentId, waAccounts, user, navigate, onDon
             {selectedModelRow && (
               <FieldRow>
                 <Field label="Model *">
-                  <SearchableSelect
-                    value={form.llmModel}
-                    onChange={(val) => setForm(f => ({ ...f, llmModel: val }))}
-                    placeholder="— Select —"
-                    options={modelOptions.map(m => ({ value: m.value, label: m.label }))}
-                  />
+                  {showCustomModel ? (
+                    <>
+                      <input
+                        value={form.llmModel}
+                        onChange={(e) => setForm(f => ({ ...f, llmModel: e.target.value.trim() }))}
+                        placeholder="e.g. gpt-4.1-mini"
+                        spellCheck={false}
+                        style={{
+                          width: '100%', padding: '9px 11px', borderRadius: 8,
+                          border: `1.5px solid ${C.border}`, fontSize: 13.5,
+                          fontFamily: MONO, background: C.cardBg, color: C.text, outline: 'none',
+                        }}
+                      />
+                      <div style={{ fontSize: 11, color: C.textMuted, marginTop: 5, lineHeight: 1.5 }}>
+                        Sent to the provider as-is — we don’t validate it.{' '}
+                        <button
+                          type="button"
+                          onClick={() => { setCustomModel(false); setForm(f => ({ ...f, llmModel: defaultModelFor(selectedModelRow?.provider) || '' })); }}
+                          style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: C.primary, font: 'inherit', fontWeight: 600 }}
+                        >
+                          Choose from the list instead
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <SearchableSelect
+                      value={form.llmModel}
+                      onChange={(val) => setForm(f => ({ ...f, llmModel: val }))}
+                      placeholder="— Select —"
+                      options={modelOptions.map(m => ({ value: m.value, label: m.label }))}
+                      // Any catalog goes stale the day a provider ships a new
+                      // model. Without this the operator has to wait for a deploy
+                      // to use it.
+                      createLabel="Use a custom model id…"
+                      onCreate={() => { setCustomModel(true); setForm(f => ({ ...f, llmModel: '' })); }}
+                    />
+                  )}
                 </Field>
               </FieldRow>
             )}

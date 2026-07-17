@@ -4,9 +4,19 @@ const pool = require('../db');
 const { requirePermission, scopeClause, orgScope } = require('../middleware/access');
 
 
+// Executable node types. A node whose type isn't here is DROPPED on save — see
+// the `continue` below — and, because its id never enters `seen`, every edge
+// touching it is dropped too, silently bisecting the flow and orphaning
+// everything downstream. The client gets a 200 either way.
+//
+// So: adding a node type means editing THIS set, NODE_HANDLERS in
+// engine/automationEngine.js, and BLOCK_GROUPS in the frontend builder.
+// nodeTypes.test.js fails if these two backend lists ever diverge.
 const VALID_NODE_TYPES = new Set([
   'trigger', 'message', 'condition', 'delay', 'action',
   'handoff', 'ai', 'api', 'subflow',
+  'agentHandoff',   // hand the conversation to an AI agent, which then owns it
+  'sheets',         // Google Sheets: one type, an `op` field picks the operation
 ]);
 function sanitizeConfig(config) {
   if (!config || typeof config !== 'object') return config;
@@ -89,6 +99,14 @@ router.post('/chatbots', requirePermission('chatbot-builder'), async (req, res) 
        RETURNING *`,
       [name.trim(), description || null, status || 'draft', trigger_type || 'keyword', JSON.stringify(sanitizeConfig(config) || {}), req.tenantId ?? null, req.organizationId ?? null]
     );
+    // Created straight into 'active' — same transition, same seeding rule.
+    if (rows[0].status === 'active') {
+      try {
+        await require('../services/scheduleTrigger').seedScheduleState(rows[0].id, rows[0].config);
+      } catch (e) {
+        console.error('[chatbots] schedule seed failed:', e.message);
+      }
+    }
     res.status(201).json(rows[0]);
   } catch (err) {
     console.error('[chatbots] create error:', err.message);
@@ -103,6 +121,17 @@ router.put('/chatbots/:id', requirePermission('chatbot-builder'), async (req, re
     if (name !== undefined && !name.trim()) {
       return res.status(400).json({ error: 'Name is required' });
     }
+    // Read the CURRENT status before writing: a schedule flow needs its
+    // fired-date seeded when it turns on, and only on that transition — see
+    // seedScheduleState(). COALESCE means an omitted `status` keeps the old one,
+    // so "is it active now" alone can't tell us it just changed.
+    const preParams = [req.params.id];
+    const { rows: pre } = await pool.query(
+      `SELECT status FROM coexistence.chatbots WHERE id = $1${scopeClause(req, null, preParams)}`,
+      preParams
+    );
+    const wasActive = pre.length > 0 && pre[0].status === 'active';
+
     const updParams = [name ? name.trim() : null, description, status, trigger_type, config ? JSON.stringify(sanitizeConfig(config)) : null, req.params.id];
     const { rows } = await pool.query(
       `UPDATE coexistence.chatbots SET
@@ -117,6 +146,16 @@ router.put('/chatbots/:id', requirePermission('chatbot-builder'), async (req, re
       updParams
     );
     if (rows.length === 0) return res.status(404).json({ error: 'Chatbot not found' });
+
+    if (!wasActive && rows[0].status === 'active') {
+      // Best-effort: a seeding failure must not fail the save. Worst case the
+      // sweeper decides for itself on the next tick.
+      try {
+        await require('../services/scheduleTrigger').seedScheduleState(rows[0].id, rows[0].config);
+      } catch (e) {
+        console.error('[chatbots] schedule seed failed:', e.message);
+      }
+    }
     res.json(rows[0]);
   } catch (err) {
     console.error('[chatbots] update error:', err.message);

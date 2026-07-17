@@ -14,7 +14,7 @@ const NAV_GROUPS = [
   ] },
   { title: 'Engage', items: [
     { id: 'chats',    label: 'Chats',    Icon: MessageCircle },
-    { id: 'contacts', label: 'Contacts', Icon: Users },
+    { id: 'contacts', label: 'Lead Studio', Icon: Users },
     { id: 'pipelines', label: 'Pipelines', Icon: KanbanSquare },
   ] },
   { title: 'Build', items: [

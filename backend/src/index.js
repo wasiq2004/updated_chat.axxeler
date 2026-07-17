@@ -230,6 +230,9 @@ const billingRouter = require('./routes/billing');
 app.use('/api', authMiddleware, billingRouter);
 
 // Tenant audit log (audit.view) + white-label branding.
+// Saved sheet library — named spreadsheet+tab shortcuts. Read is open to anyone
+// who can build a flow (the picker needs it); writes are adminOnly inside.
+app.use('/api', authMiddleware, require('./routes/savedSheets').router);
 app.use('/api', authMiddleware, require('./routes/audit'));
 app.use('/api', authMiddleware, require('./routes/branding'));
 
@@ -291,6 +294,16 @@ async function start() {
   startAgentWorker();
   // Follow-up sequences: every 60s send the next due step of active enrollments.
   require('./services/sequences').startSequenceSweeper();
+
+  // Google Sheets row trigger. Sheets has no row-change webhook, so this polls
+  // and diffs against a snapshot. It self-gates: with no sheet trigger
+  // configured, findSheetTriggers returns nothing and zero Google calls are
+  // made, so an install that never touches Sheets pays nothing for this.
+  require('./services/sheetTrigger').startSheetTriggerPoller();
+
+  // Scheduled automation triggers. Self-gates the same way: no schedule trigger
+  // configured, no query cost beyond one indexed lookup a minute.
+  require('./services/scheduleTrigger').startScheduleSweeper();
 
   // Subscription expiry: keep billing status in sync (active→past_due at period
   // end, →suspended once the grace window is exhausted). Feature locking itself

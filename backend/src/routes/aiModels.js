@@ -7,22 +7,28 @@
 // (util/crypto.js) and never returned in plaintext except via ?reveal=1 on the
 // single-row GET, which is gated to admins.
 //
-// Supports the providers the agent engine has tool-use adapters for: Anthropic,
-// OpenAI, and Groq. The exact model (e.g. gpt-4o-mini, llama-3.3-70b-versatile)
-// is chosen per-agent in the agent editor — this registry only stores the
-// provider + credential.
+// Supports whichever providers the agent engine has tool-use adapters for —
+// see llm/providers.js, the single source of truth. The exact model (e.g.
+// gpt-4o-mini, llama-3.3-70b-versatile) is chosen per-agent in the agent editor;
+// this registry only stores the provider + credential (+ an optional base-URL
+// override for gateways like OpenRouter).
 
 const { Router } = require('express');
 const pool = require('../db');
 const { encrypt, decrypt, maskSecret } = require('../util/crypto');
 const { adminOnly, scopeClause } = require('../middleware/access');
+const {
+  PROVIDER_IDS, isSupportedProvider, providerLabels, supportedHint, publicCatalog, getProviderMeta,
+} = require('../llm/providers');
 
 const router = Router();
 
-const SUPPORTED = new Set(['anthropic', 'openai', 'groq']);
-const PROVIDER_LABELS = { anthropic: 'Anthropic Claude', openai: 'OpenAI', groq: 'Groq' };
-// Human-readable list for validation errors, kept in sync with SUPPORTED.
-const SUPPORTED_HINT = "provider must be 'anthropic', 'openai', or 'groq'";
+// All three of these were hand-maintained here — including SUPPORTED_HINT, a
+// prose string with a "kept in sync with SUPPORTED" comment doing the work a
+// derivation should. Now generated.
+const SUPPORTED = new Set(PROVIDER_IDS);
+const PROVIDER_LABELS = providerLabels();
+const SUPPORTED_HINT = supportedHint();
 
 // Listing models is needed by the agent editor, which non-admin operators with
 // agent access may open — so list/get(masked) only require authentication.
@@ -35,6 +41,7 @@ function authed(req, res, next) {
 function shape(row, { reveal = false } = {}) {
   if (!row) return null;
   const apiKey = decrypt(row.api_key_encrypted);
+  const meta = getProviderMeta(row.provider);
   return {
     id: row.id,
     provider: row.provider,
@@ -42,10 +49,40 @@ function shape(row, { reveal = false } = {}) {
     label: row.label || null,
     apiKeyMasked: maskSecret(apiKey || ''),
     apiKey: reveal ? (apiKey || '') : undefined,
+    // base_url has existed since migration 029 and was never returned, so the UI
+    // had no way to show or edit an override that the engine (also) ignored.
+    baseUrl: row.base_url || null,
+    supportsBaseUrl: !!(meta && meta.supportsBaseUrl),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
 }
+
+// A base URL is only meaningful for OpenAI-compatible providers. Returning null
+// for a native one is what stops a stale override surviving a provider switch
+// and misrouting Claude at someone's OpenRouter gateway.
+function normaliseBaseUrl(provider, raw) {
+  const meta = getProviderMeta(provider);
+  if (!meta || !meta.supportsBaseUrl) return null;
+  const v = String(raw || '').trim();
+  if (!v) return null;
+  if (!/^https:\/\//i.test(v)) {
+    const err = new Error('Base URL must start with https://');
+    err.status = 400;
+    throw err;
+  }
+  return v;
+}
+
+// GET /ai-models/providers — the catalog the UI renders.
+//
+// Served rather than duplicated in the frontend: the model catalog previously
+// existed twice (frontend/components/agents/modelCatalog.js and
+// backend/services/mcpService.js) with "keep in sync" comments, and had already
+// drifted. Now there is one list and the browser asks for it.
+router.get('/ai-models/providers', authed, (req, res) => {
+  res.json({ providers: publicCatalog() });
+});
 
 // List — any authenticated user (the agent editor needs this).
 router.get('/ai-models', authed, async (req, res) => {
@@ -80,7 +117,7 @@ router.get('/ai-models/:id', authed, async (req, res) => {
   }
 });
 
-// Create — admin only. Body: { provider, apiKey, label? }
+// Create — admin only. Body: { provider, apiKey, label?, baseUrl? }
 router.post('/ai-models', adminOnly, async (req, res) => {
   try {
     const b = req.body || {};
@@ -92,14 +129,16 @@ router.post('/ai-models', adminOnly, async (req, res) => {
     if (!SUPPORTED.has(provider)) {
       return res.status(400).json({ error: SUPPORTED_HINT });
     }
+    const baseUrl = normaliseBaseUrl(provider, b.baseUrl);
     const { rows } = await pool.query(
-      `INSERT INTO coexistence.ai_models (provider, label, api_key_encrypted, available_models, tenant_id)
-       VALUES ($1, $2, $3, '[]'::jsonb, $4)
+      `INSERT INTO coexistence.ai_models (provider, label, api_key_encrypted, base_url, available_models, tenant_id)
+       VALUES ($1, $2, $3, $4, '[]'::jsonb, $5)
        RETURNING *`,
-      [provider, b.label?.trim() || null, encrypt(apiKey), req.tenantId ?? null],
+      [provider, b.label?.trim() || null, encrypt(apiKey), baseUrl, req.tenantId ?? null],
     );
     res.status(201).json(shape(rows[0]));
   } catch (err) {
+    if (err.status === 400) return res.status(400).json({ error: err.message });
     console.error('[ai-models] create error:', err.message);
     res.status(500).json({ error: 'Failed to add AI model' });
   }
@@ -116,14 +155,30 @@ router.put('/ai-models/:id', adminOnly, async (req, res) => {
     let i = 1;
     const push = (col, val) => { sets.push(`${col} = $${i++}`); params.push(val); };
 
+    // The provider decides whether a base URL is even legal, so resolve it first
+    // — including when only the provider is changing and baseUrl wasn't sent.
+    let effProvider = null;
     if (b.provider !== undefined) {
-      const provider = String(b.provider).trim().toLowerCase();
-      if (!SUPPORTED.has(provider)) {
+      effProvider = String(b.provider).trim().toLowerCase();
+      if (!SUPPORTED.has(effProvider)) {
         return res.status(400).json({ error: SUPPORTED_HINT });
       }
-      push('provider', provider);
+      push('provider', effProvider);
     }
     if (b.label !== undefined) push('label', b.label?.trim() || null);
+
+    if (b.baseUrl !== undefined || effProvider !== null) {
+      // Which provider will this row BE after the update? A base URL sent
+      // alongside a provider change must be validated against the new provider.
+      const { rows: cur } = await pool.query('SELECT provider, base_url FROM coexistence.ai_models WHERE id = $1', [req.params.id]);
+      if (!cur.length) return res.status(404).json({ error: 'Not found' });
+      const target = effProvider || cur[0].provider;
+      const raw = b.baseUrl !== undefined ? b.baseUrl : cur[0].base_url;
+      // normaliseBaseUrl returns null for a provider that doesn't support one —
+      // so switching a compat provider to a native one CLEARS the stale override
+      // rather than leaving it to misroute the native provider at the old host.
+      push('base_url', normaliseBaseUrl(target, raw));
+    }
     if (b.apiKey !== undefined) {
       const key = String(b.apiKey).trim();
       if (!key) return res.status(400).json({ error: 'apiKey cannot be empty — omit it to keep the current key' });
@@ -141,6 +196,7 @@ router.put('/ai-models/:id', adminOnly, async (req, res) => {
     if (rows.length === 0) return res.status(404).json({ error: 'Not found' });
     res.json(shape(rows[0]));
   } catch (err) {
+    if (err.status === 400) return res.status(400).json({ error: err.message });
     console.error('[ai-models] update error:', err.message);
     res.status(500).json({ error: 'Failed to update AI model' });
   }

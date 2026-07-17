@@ -237,6 +237,39 @@ router.get('/google-integrations/:id/spreadsheets/:spreadsheetId/tabs', async (r
   }
 });
 
+// GET /google-integrations/:id/spreadsheets/:spreadsheetId/headers?tab=Sheet1
+//
+// The column names of a tab, for the automation builder's column mapper. The
+// operator maps column NAMES, never A1 ranges — so the builder has to know what
+// the names are, and there was no route that returned them.
+router.get('/google-integrations/:id/spreadsheets/:spreadsheetId/headers', async (req, res) => {
+  const tab = String(req.query.tab || '').trim();
+  if (!tab) return res.status(400).json({ error: 'tab is required' });
+  try {
+    // Same ownership guard as the sibling tabs route.
+    const { rows } = await pool.query(
+      'SELECT id FROM coexistence.oauth_credentials WHERE id = $1 AND user_id = $2 AND provider = $3',
+      [req.params.id, req.user.id, PROVIDER],
+    );
+    if (rows.length === 0) return res.status(404).json({ error: 'Not found' });
+
+    const out = await googleSheets.getRows({
+      credentialId: req.params.id,
+      spreadsheetId: req.params.spreadsheetId,
+      sheetName: tab,
+      args: { max_rows: 1 },
+    });
+    res.json({ headers: (out.headers || []).filter(h => String(h || '').trim()) });
+  } catch (err) {
+    // A missing header row is a real, fixable answer — not a server fault.
+    if (err.code === 'NO_HEADER' || /header row/i.test(err.message || '')) {
+      return res.status(409).json({ error: err.message, code: 'NO_HEADER' });
+    }
+    console.error('[google-integrations] headers error:', err.message);
+    res.status(500).json({ error: 'Could not read that tab’s columns' });
+  }
+});
+
 router.delete('/google-integrations/:id', async (req, res) => {
   try {
     // Make sure the credential being deleted belongs to the caller — without

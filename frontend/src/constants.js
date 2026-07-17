@@ -70,15 +70,18 @@ export function formatTime(ts) {
   return d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
 }
 
-// Mask a phone number for display — keep the first 2 and last 3 digits, star the
-// rest (e.g. "919487722330" -> "91*******330", "93xxxxx678" -> "93*****678").
-// Used directly for non-interactive contexts (<option>, strings); the
-// MaskedNumber component wraps this with click-to-reveal for JSX.
+// Phone numbers are shown in full. This used to star out the middle digits
+// ("91*******330"); it now passes through.
+//
+// The masking was cosmetic, not a security control: every contact endpoint
+// returns the full number in the clear, so it protected nothing and cost the
+// people who actually need the number an extra click on every row.
+//
+// Kept as a function rather than deleted so the ~11 call sites (<option> labels,
+// plain strings) don't all have to change. Still normalises to a string, which
+// is what those call sites rely on for null/undefined.
 export function maskPhone(raw) {
-  const s = String(raw ?? '');
-  const digits = s.replace(/\D/g, '');
-  if (digits.length <= 5) return s; // too short to meaningfully mask
-  return digits.slice(0, 2) + '*'.repeat(digits.length - 5) + digits.slice(-3);
+  return String(raw ?? '');
 }
 
 // Tag colors are stored as pale pastels (good as light fills, unreadable with

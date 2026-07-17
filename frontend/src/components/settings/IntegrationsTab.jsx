@@ -4,6 +4,7 @@ import { api } from '../../api.js';
 import { C, FONT } from '../../constants.js';
 import GoogleIntegrationsTab from './GoogleIntegrationsTab.jsx';
 import AiModelsTab from './AiModelsTab.jsx';
+import SavedSheetsTab from './SavedSheetsTab.jsx';
 
 /**
  * Settings → Integrations.
@@ -11,13 +12,14 @@ import AiModelsTab from './AiModelsTab.jsx';
  * A card grid of available integrations. Clicking a card drills into that
  * integration's own detail page (its API/credentials and what's connected),
  * routed via the hash: #/admin-settings/integrations/<key>. The two cards:
- *   - Google     → Google Sheets/Calendar/Gmail accounts (OAuth)
- *   - AI Models  → Anthropic / OpenAI provider keys
+ *   - Google       → Google Sheets/Calendar/Gmail accounts (OAuth)
+ *   - AI Models    → LLM provider keys (see backend/src/llm/providers.js)
+ *   - Saved Sheets → named spreadsheet+tab shortcuts for the automation builder
  *
  * Deep links (e.g. the Google OAuth callback redirecting to
  * .../integrations/google?google=connected) land directly on the detail view.
  */
-export default function IntegrationsTab({ subParts = [], navigate }) {
+export default function IntegrationsTab({ subParts = [], navigate, user }) {
   const selected = subParts[1] || null;
   const goCards = () => navigate && navigate('admin-settings', 'integrations');
   const goDetail = (key) => navigate && navigate('admin-settings', 'integrations', key);
@@ -27,6 +29,9 @@ export default function IntegrationsTab({ subParts = [], navigate }) {
   }
   if (selected === 'ai-models') {
     return <DetailShell title="AI Models" onBack={goCards}><AiModelsTab /></DetailShell>;
+  }
+  if (selected === 'saved-sheets') {
+    return <DetailShell title="Saved Sheets" onBack={goCards}><SavedSheetsTab user={user} /></DetailShell>;
   }
   return <CardGrid onOpen={goDetail} />;
 }
@@ -63,15 +68,18 @@ function DetailShell({ title, onBack, children }) {
 function CardGrid({ onOpen }) {
   const [google, setGoogle] = useState({ configured: null, count: 0 });
   const [modelCount, setModelCount] = useState(null);
+  const [sheetCount, setSheetCount] = useState(null);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [gStatus, models] = await Promise.all([
+      const [gStatus, models, sheets] = await Promise.all([
         api.googleIntegrations.status().catch(() => ({ configured: false })),
         api.aiModels.list().catch(() => []),
+        api.savedSheets.list().catch(() => []),
       ]);
+      setSheetCount(Array.isArray(sheets) ? sheets.length : 0);
       let count = 0;
       if (gStatus.configured) {
         const accts = await api.googleIntegrations.list().catch(() => []);
@@ -113,6 +121,15 @@ function CardGrid({ onOpen }) {
                 : <Muted>No models connected</Muted>
             }
             onClick={() => onOpen('ai-models')}
+          />
+          <IntegrationCard
+            title="Saved Sheets"
+            status={
+              loading ? <Muted><Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} /> Checking…</Muted>
+                : sheetCount > 0 ? <Connected>{sheetCount} sheet{sheetCount === 1 ? '' : 's'} saved</Connected>
+                : <Muted>None saved yet</Muted>
+            }
+            onClick={() => onOpen('saved-sheets')}
           />
         </div>
 

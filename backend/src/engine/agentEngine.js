@@ -8,6 +8,7 @@ const pool = require('../db');
 const { decrypt } = require('../util/crypto');
 const { ssrfSafeFetch } = require('../util/ssrfGuard');
 const { getProvider } = require('../llm');
+const { providerEnvKeys, resolveBaseUrl } = require('../llm/providers');
 const googleSheets = require('../services/googleSheets');
 const { enqueueSend } = require('../queue/sendQueue');
 const { insertPendingRow } = require('../services/messageSender');
@@ -558,17 +559,23 @@ async function buildMessageHistory({ waAccountId, contactNumber, limit, currentI
 // row has none (shouldn't happen — the route requires a key) or the agent has no
 // model bound, fall back to the server-wide env key for that provider.
 // Server-wide env var that backs each provider when no registry key is present.
-const PROVIDER_ENV_KEY = {
-  anthropic: 'ANTHROPIC_API_KEY',
-  openai: 'OPENAI_API_KEY',
-  groq: 'GROQ_API_KEY',
-};
+// Derived from the registry so a new provider gets its env fallback for free —
+// this was a hand-written map, and a provider missing from it fell through to a
+// vague "the provider API key" error message instead of naming the variable.
+const PROVIDER_ENV_KEY = providerEnvKeys();
 
 function pickApiKey(agent) {
   const fromRegistry = decrypt(agent.ai_api_key_encrypted);
   if (fromRegistry) return fromRegistry;
   const envName = PROVIDER_ENV_KEY[agent.ai_provider];
   return envName ? (process.env[envName] || '') : '';
+}
+
+// The gateway/base-URL override stored against this agent's credential, if the
+// provider supports one. ai_models.base_url has existed since migration 029 and
+// was read by nothing — a saved override was accepted and then ignored.
+function pickBaseUrl(agent) {
+  return resolveBaseUrl(agent.ai_provider, agent.ai_base_url);
 }
 
 // Resolve an OpenAI key for Whisper transcription: the agent's own key if it's
@@ -713,6 +720,24 @@ async function recordStep(runId, stepIndex, step) {
  * (the chat history never carries it). Without this the agent can't fill a
  * "Mobile Number" column when saving an order to a sheet.
  */
+// The note a flow left when it handed this conversation over.
+//
+// The agent inherits the whole transcript automatically (buildMessageHistory
+// reads chat_history by contact), so this is deliberately NOT a summary of what
+// was said — it's what the flow CONCLUDED, which the transcript cannot show:
+// "qualified as enterprise", "already quoted ₹40k". Without it the agent opens
+// by re-asking what the flow just established, and the handoff feels like
+// starting over.
+function withHandoffBrief(systemPrompt, brief) {
+  const b = String(brief || '').trim();
+  if (!b) return systemPrompt;
+  return `${systemPrompt}\n\n## Handoff brief — you are taking over an existing conversation\n`
+    + `- ${b}\n`
+    + `- You can see the full conversation above. Do NOT greet them as if you've just met, `
+    + `and do NOT re-ask for anything already established here or in the transcript. `
+    + `Continue from this point as the same business.`;
+}
+
 function withContactContext(systemPrompt, contactNumber) {
   const base = systemPrompt || '';
   // Always tell the model today's date/time (IST). Without it the LLM guesses,
@@ -729,9 +754,10 @@ function withContactContext(systemPrompt, contactNumber) {
  * Main entry. Loads the agent, builds tools + context, runs the LLM loop,
  * persists everything, and enqueues the final reply on the existing sendQueue.
  */
-async function runAgent({ agentId, contactNumber, inboundMessageId, inboundText }) {
+async function runAgent({ agentId, contactNumber, inboundMessageId, inboundText, explicitlyBound = false }) {
   const { rows: agentRows } = await pool.query(
-    `SELECT a.*, am.provider AS ai_provider, am.api_key_encrypted AS ai_api_key_encrypted
+    `SELECT a.*, am.provider AS ai_provider, am.api_key_encrypted AS ai_api_key_encrypted,
+            am.base_url AS ai_base_url
        FROM coexistence.agents a
        LEFT JOIN coexistence.ai_models am ON am.id = a.ai_model_id
       WHERE a.id = $1`,
@@ -739,9 +765,30 @@ async function runAgent({ agentId, contactNumber, inboundMessageId, inboundText 
   );
   const agent = agentRows[0];
   if (!agent) throw new Error(`Agent id=${agentId} not found`);
-  if (!agent.is_active) throw new Error(`Agent id=${agentId} is inactive`);
+  // is_active is relaxed ONLY for an explicitly-bound run (the Handoff to AI
+  // Agent node). At most one agent per account may be active, so the agent a
+  // flow hands off to is usually inactive by construction — enforcing is_active
+  // here would make every handoff throw.
+  //
+  // A DRAFT is still refused in both cases: draft means deliberately unfinished,
+  // and answering a customer from a half-written prompt is worse than silence.
+  if (agent.status === 'draft') throw new Error(`Agent id=${agentId} is a draft`);
+  if (!agent.is_active && !explicitlyBound) throw new Error(`Agent id=${agentId} is inactive`);
   if (!agent.wa_account_id) throw new Error(`Agent id=${agentId} has no WhatsApp account bound`);
   if (!agent.ai_provider) throw new Error(`Agent id=${agentId} has no AI model connected. Connect one under Admin Settings → Integrations → AI Models.`);
+
+  // The brief a flow left for this specific conversation, if any. Read here (not
+  // carried through the queue) so an operator editing it between the handoff and
+  // the customer's next message gets the current text.
+  let handoffBrief = null;
+  try {
+    const { rows: briefRows } = await pool.query(
+      `SELECT agent_brief FROM coexistence.contacts
+        WHERE contact_number = $1 AND agent_id = $2 LIMIT 1`,
+      [contactNumber, agentId],
+    );
+    handoffBrief = briefRows[0]?.agent_brief || null;
+  } catch { /* pre-migration boot — run without a brief rather than fail the run */ }
 
   const apiKey = pickApiKey(agent);
   if (!apiKey) {
@@ -826,7 +873,7 @@ async function runAgent({ agentId, contactNumber, inboundMessageId, inboundText 
 
     const provider = getProvider(agent.ai_provider);
     const result = await provider.runWithTools({
-      systemPrompt: withContactContext(agent.system_prompt, contactNumber),
+      systemPrompt: withHandoffBrief(withContactContext(agent.system_prompt, contactNumber), handoffBrief),
       messages: history,
       tools,
       onToolCall: async ({ name, args }) => {
@@ -837,6 +884,9 @@ async function runAgent({ agentId, contactNumber, inboundMessageId, inboundText 
       onStep,
       model: agent.llm_model,
       apiKey,
+      // null unless this credential set a gateway override AND the provider
+      // supports one — native providers ignore it by construction.
+      baseURL: pickBaseUrl(agent),
       maxIterations: Math.max(1, Math.min(20, agent.max_tool_iterations || 6)),
     });
 
@@ -920,7 +970,8 @@ async function runAgent({ agentId, contactNumber, inboundMessageId, inboundText 
  */
 async function runAgentTest({ agentId, messages }) {
   const { rows: agentRows } = await pool.query(
-    `SELECT a.*, am.provider AS ai_provider, am.api_key_encrypted AS ai_api_key_encrypted
+    `SELECT a.*, am.provider AS ai_provider, am.api_key_encrypted AS ai_api_key_encrypted,
+            am.base_url AS ai_base_url
        FROM coexistence.agents a
        LEFT JOIN coexistence.ai_models am ON am.id = a.ai_model_id
       WHERE a.id = $1`,
@@ -975,6 +1026,9 @@ async function runAgentTest({ agentId, messages }) {
     onStep,
     model: agent.llm_model,
     apiKey,
+    // Must match the live path — a test run that ignored the gateway override
+    // would pass against the wrong endpoint and prove nothing.
+    baseURL: pickBaseUrl(agent),
     maxIterations: Math.max(1, Math.min(20, agent.max_tool_iterations || 6)),
   });
 
@@ -1015,7 +1069,8 @@ async function runAgentTest({ agentId, messages }) {
 // used by the in-app test chat's mic button.
 async function transcribeForAgent({ agentId, filePath }) {
   const { rows } = await pool.query(
-    `SELECT a.*, am.provider AS ai_provider, am.api_key_encrypted AS ai_api_key_encrypted
+    `SELECT a.*, am.provider AS ai_provider, am.api_key_encrypted AS ai_api_key_encrypted,
+            am.base_url AS ai_base_url
        FROM coexistence.agents a
        LEFT JOIN coexistence.ai_models am ON am.id = a.ai_model_id
       WHERE a.id = $1`,
@@ -1035,7 +1090,8 @@ async function transcribeForAgent({ agentId, filePath }) {
 // close-summary sweeper (services/agentCloseSummary.js).
 async function runCloseSummary({ agentId, waNumber, contactNumber }) {
   const { rows } = await pool.query(
-    `SELECT a.*, am.provider AS ai_provider, am.api_key_encrypted AS ai_api_key_encrypted
+    `SELECT a.*, am.provider AS ai_provider, am.api_key_encrypted AS ai_api_key_encrypted,
+            am.base_url AS ai_base_url
        FROM coexistence.agents a
        LEFT JOIN coexistence.ai_models am ON am.id = a.ai_model_id
       WHERE a.id = $1`,
@@ -1071,6 +1127,9 @@ async function runCloseSummary({ agentId, waNumber, contactNumber }) {
       onStep: async () => {},
       model: agent.llm_model,
       apiKey,
+      // null unless this credential set a gateway override AND the provider
+      // supports one — native providers ignore it by construction.
+      baseURL: pickBaseUrl(agent),
       maxIterations: Math.max(1, Math.min(20, agent.max_tool_iterations || 6)),
       conversationKey: `${agent.id}:${contactNumber}:close`,
       contactNumber,

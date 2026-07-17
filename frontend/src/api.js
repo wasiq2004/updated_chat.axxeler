@@ -247,11 +247,29 @@ export const api = {
       req(`/google-integrations/${id}/spreadsheets${q ? `?q=${encodeURIComponent(q)}` : ''}`),
     listTabs: (id, spreadsheetId) =>
       req(`/google-integrations/${id}/spreadsheets/${encodeURIComponent(spreadsheetId)}/tabs`),
+    // A tab's column names, for the automation builder's column mapper — the
+    // operator maps names, never A1 ranges, so the builder has to know them.
+    listHeaders: (id, spreadsheetId, tab) =>
+      req(`/google-integrations/${id}/spreadsheets/${encodeURIComponent(spreadsheetId)}/headers?tab=${encodeURIComponent(tab)}`),
+  },
+  // Saved sheet library — connect a spreadsheet+tab once, then pick it by name.
+  // Reading a SAVED sheet needs only the Sheets scope (the id is already known),
+  // so it works even for an account that can't browse Drive.
+  savedSheets: {
+    list: () => req('/saved-sheets'),
+    headers: (id) => req(`/saved-sheets/${id}/headers`),
+    create: (data) => req('/saved-sheets', { method: 'POST', body: JSON.stringify(data) }),
+    update: (id, data) => req(`/saved-sheets/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    delete: (id) => req(`/saved-sheets/${id}`, { method: 'DELETE' }),
   },
   // AI Models registry — workspace-wide LLM provider credentials (Admin
   // Settings → Integrations → AI Models). Agents reference a row by id; the key
   // is encrypted server-side and only revealed to admins via ?reveal=1.
   aiModels: {
+    // The provider catalog (labels, model line-ups, key hints, base-URL support).
+    // Served from backend/src/llm/providers.js so there is exactly one list —
+    // this used to be hardcoded in the frontend AND twice in the backend.
+    providers: () => req('/ai-models/providers'),
     list: () => req('/ai-models'),
     get: (id, reveal = false) => req(`/ai-models/${id}${reveal ? '?reveal=1' : ''}`),
     create: (data) => req('/ai-models', { method: 'POST', body: JSON.stringify(data) }),

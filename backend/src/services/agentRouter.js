@@ -53,11 +53,44 @@ async function routeIfActive(record) {
   const hasText = !isAudio && !!(record.message_body && record.message_body.trim());
   if (!hasText && !isAudio && !isImage) return null; // text, voice note, or image
 
-  const { rows } = await pool.query(
+  // 1. An EXPLICIT per-conversation binding wins over the account default.
+  //
+  // The is_active gate is deliberately relaxed here, and only here: at most one
+  // agent per account may be active, so an agent a flow handed off to is usually
+  // NOT the account's active one. Requiring is_active would make the whole
+  // Handoff-to-AI-Agent node a no-op.
+  //
+  // Drafts are still refused (status <> 'draft'): a draft is explicitly
+  // unfinished, and running one would answer a customer with a half-built prompt.
+  //
+  // The account match is part of the WHERE, not a check afterwards: an agent
+  // replies from its OWN bound number, so a binding pointing at a different
+  // account would answer the customer from the wrong phone number. Such a
+  // binding is ignored and we fall through to the account's own agent.
+  const { rows: bound } = await pool.query(
     `SELECT a.id, a.wa_account_id, a.trigger_mode, a.trigger_keyword,
             a.trigger_match_type, a.trigger_case_sensitive, a.trigger_session_minutes,
             a.transcribe_audio, a.accept_images,
-            a.handoff_enabled, a.handoff_user_ids, a.handoff_keywords
+            a.handoff_enabled, a.handoff_user_ids, a.handoff_keywords,
+            TRUE AS explicitly_bound
+       FROM coexistence.contacts c
+       JOIN coexistence.agents a ON a.id = c.agent_id
+       JOIN coexistence.whatsapp_accounts w ON w.id = a.wa_account_id
+      WHERE c.wa_number = $1 AND c.contact_number = $2
+        AND a.status <> 'draft'
+        AND (regexp_replace(w.display_phone_number, '\\D', '', 'g') = $1
+             OR w.phone_number_id = $3)
+      LIMIT 1`,
+    [record.wa_number || '', record.contact_number, record.phone_number_id || ''],
+  );
+
+  // 2. Otherwise the WA account's single active agent.
+  const { rows } = bound.length ? { rows: bound } : await pool.query(
+    `SELECT a.id, a.wa_account_id, a.trigger_mode, a.trigger_keyword,
+            a.trigger_match_type, a.trigger_case_sensitive, a.trigger_session_minutes,
+            a.transcribe_audio, a.accept_images,
+            a.handoff_enabled, a.handoff_user_ids, a.handoff_keywords,
+            FALSE AS explicitly_bound
        FROM coexistence.agents a
        JOIN coexistence.whatsapp_accounts w ON w.id = a.wa_account_id
       WHERE a.is_active = TRUE
@@ -96,7 +129,14 @@ async function routeIfActive(record) {
   // there's already an active session (so multi-turn chats continue). A voice
   // note can't be keyword-matched before transcription, so it's handled only
   // within an active session.
-  const triggerMode = agent.trigger_mode || 'any';
+  //
+  // An explicitly-bound agent skips this entirely: a flow already decided to
+  // hand this conversation over, which IS the engagement decision. Re-applying
+  // the agent's own keyword/new-lead gate would silently drop the handoff —
+  // a 'new' agent would never engage (the conversation is by definition not new
+  // by the time a flow ran), and a 'keyword' agent would only reply if the
+  // customer happened to repeat its trigger word.
+  const triggerMode = agent.explicitly_bound ? 'any' : (agent.trigger_mode || 'any');
   if (triggerMode === 'keyword' || triggerMode === 'new') {
     let engages;
     if (triggerMode === 'keyword') {
@@ -151,8 +191,11 @@ async function routeIfActive(record) {
     contactNumber: record.contact_number,
     inboundMessageId: record.message_id || null,
     inboundText: hasText ? record.message_body : null,
+    // Carried so the engine's own is_active check knows this run was authorised
+    // by an explicit binding, not by the account default.
+    explicitlyBound: !!agent.explicitly_bound,
   });
-  return { agentId: agent.id };
+  return { agentId: agent.id, explicitlyBound: !!agent.explicitly_bound };
 }
 
 module.exports = { routeIfActive };

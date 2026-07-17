@@ -3,6 +3,8 @@ import { Users, Search, Phone, User, Pencil, Trash2, Loader2, X, Send, Play, Mus
 import DeleteConfirmModal from '../components/DeleteConfirmModal.jsx';
 import WhatsAppPreview, { BroadcastMessagePreview } from '../components/WhatsAppPreview.jsx';
 import TagMultiSelect from '../components/TagMultiSelect.jsx';
+import ManageTagsModal from '../components/ManageTagsModal.jsx';
+import CreateCategoryModal from '../components/CreateCategoryModal.jsx';
 import { CustomFieldEditor, CustomFieldView } from '../components/CustomFieldInputs.jsx';
 import { api } from '../api.js';
 import { C, FONT, MONO, maskPhone, darkenColor } from '../constants.js';
@@ -10,6 +12,130 @@ import MaskedNumber from '../components/MaskedNumber.jsx';
 import SearchableSelect from '../components/SearchableSelect.jsx';
 
 const ROLE_LABEL_MAP = { admin: 'Admin', bda_sales: 'Sales', viewer: 'Viewer' };
+
+/* ── Lead Studio ────────────────────────────────────────────────────────────
+   Everything below reuses data the list endpoint ALREADY returns — score from
+   custom_fields, source from the lead-source tag category, owner from the
+   assignment, recency from created_at. No new backend. */
+
+// The score the "Update Lead Score" automation action writes. It lives in the
+// custom_fields JSONB under the literal key `lead_score` and is stored as a
+// STRING ("15"), not a number — so it needs parsing, and "0" must stay 0 rather
+// than become null.
+function leadScore(contact) {
+  const raw = contact?.custom_fields?.lead_score;
+  if (raw === undefined || raw === null || raw === '') return null;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+const HOT_SCORE = 70;
+
+// The lead-source category, matched by NAME (the backend does the same, and
+// makes it configurable via LEAD_SOURCE_CATEGORY). There is no schema-level
+// "source" — it's a tag category convention.
+function findLeadSourceCategory(categories) {
+  return categories.find(c => /^lead\s*source$/i.test(String(c.name || '').trim())) || null;
+}
+
+function leadSourceTag(contact, sourceCatId) {
+  if (!sourceCatId) return null;
+  return (contact.tags || []).find(t => t.category_id === sourceCatId) || null;
+}
+
+function daysAgo(n) {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d;
+}
+
+// ONE definition per segment, used by both the chip's count and the filter.
+// Two predicates would let a chip claim "12" and then show 9 — the count and
+// the result must be the same question asked once.
+const SEGMENTS = [
+  { key: 'all', label: 'All', match: () => true },
+  { key: 'new', label: 'New this week', match: c => !!c.created_at && new Date(c.created_at) >= daysAgo(7) },
+  { key: 'hot', label: 'Hot', match: c => (leadScore(c) ?? -1) >= HOT_SCORE },
+  { key: 'unassigned', label: 'Unassigned', match: c => !c.assigned_user_id },
+  { key: 'unscored', label: 'Unscored', match: c => leadScore(c) === null },
+];
+
+function Kpi({ label, value, tone, hint }) {
+  // The value stays ink-coloured whatever the tone — a number rendered in amber
+  // or green on a light card fails contrast, and the tone is a hint, not the
+  // information. The label carries the meaning.
+  const accent = tone === 'good' ? '#0b7a3b' : tone === 'warn' ? '#B45309' : C.textMuted;
+  return (
+    <div title={hint} style={{
+      flex: '1 1 130px', minWidth: 120, padding: '10px 13px', borderRadius: 10,
+      background: 'var(--c-cardBg)', border: `1px solid ${C.border}`, fontFamily: FONT,
+    }}>
+      <div style={{ fontSize: 10.5, fontWeight: 700, color: accent, textTransform: 'uppercase', letterSpacing: '.05em' }}>
+        {label}
+      </div>
+      <div style={{ fontSize: 21, fontWeight: 800, color: C.text, marginTop: 3, fontVariantNumeric: 'tabular-nums' }}>
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function SortableTh({ label, col, sortBy, sortDir, onSort, align = 'left' }) {
+  const on = sortBy === col;
+  return (
+    <th style={{ padding: 0, textAlign: align, borderBottom: `1px solid ${C.border}` }}>
+      {/* A real button: sorting must be keyboard-reachable, and a th with an
+          onClick announces as nothing. */}
+      <button
+        type="button"
+        onClick={() => onSort(col)}
+        aria-sort={on ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
+        style={{
+          width: '100%', padding: '12px 16px', background: 'none', border: 'none',
+          cursor: 'pointer', fontFamily: FONT, fontSize: 13, fontWeight: 600,
+          color: on ? C.text : C.textSecondary,
+          display: 'flex', alignItems: 'center', gap: 4,
+          justifyContent: align === 'right' ? 'flex-end' : 'flex-start',
+        }}
+      >
+        {label}
+        <span aria-hidden="true" style={{ fontSize: 9, opacity: on ? 1 : 0.35 }}>
+          {on ? (sortDir === 'asc' ? '▲' : '▼') : '↕'}
+        </span>
+      </button>
+    </th>
+  );
+}
+
+function ScoreCell({ score }) {
+  // An unscored lead is NOT a zero. Rendering 0 would say "we assessed them and
+  // they're worthless" instead of "nobody has scored them".
+  if (score === null) return <span style={{ color: C.textMuted, fontSize: 12 }}>—</span>;
+  const hot = score >= HOT_SCORE;
+  return (
+    <span style={{
+      display: 'inline-block', minWidth: 30, padding: '2px 8px', borderRadius: 20,
+      fontSize: 12, fontWeight: 800, fontVariantNumeric: 'tabular-nums',
+      background: hot ? 'rgba(37,211,102,.16)' : 'var(--c-surfaceAlt)',
+      color: hot ? '#0b7a3b' : C.textSecondary,
+    }}>{score}</span>
+  );
+}
+
+function OwnerChip({ name, role }) {
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12.5 }}>
+      <span style={{
+        width: 20, height: 20, borderRadius: '50%', flexShrink: 0,
+        background: C.primaryLight, color: C.primary,
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        fontSize: 10, fontWeight: 800,
+      }}>{String(name).charAt(0).toUpperCase()}</span>
+      <span style={{ color: C.text }}>{name}</span>
+      {role && <span style={{ color: C.textMuted, fontSize: 11 }}>· {ROLE_LABEL_MAP[role] || role}</span>}
+    </span>
+  );
+}
 
 function TagBadge({ tag, onRemove }) {
   return (
@@ -43,6 +169,12 @@ export default function ContactsPage({ user, onNavigate }) {
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [filterTagIds, setFilterTagIds] = useState([]);
+  // Lead Studio: segment chip, owner/source filters, and sorting.
+  const [segment, setSegment] = useState('all');
+  const [filterOwner, setFilterOwner] = useState('');   // '' = All, 'none' = Unassigned, else user id
+  const [filterSource, setFilterSource] = useState(''); // '' = All, else tag id
+  const [sortBy, setSortBy] = useState('name');         // 'name' | 'score' | 'owner'
+  const [sortDir, setSortDir] = useState('asc');
 
   const [categories, setCategories] = useState([]);
   const [tags, setTags] = useState([]);
@@ -296,13 +428,84 @@ export default function ContactsPage({ user, onNavigate }) {
     }
   };
 
-  const filtered = contacts.filter(c => {
+  const sourceCat = useMemo(() => findLeadSourceCategory(categories), [categories]);
+  const sourceTags = useMemo(
+    () => (sourceCat ? tags.filter(t => t.category_id === sourceCat.id) : []),
+    [tags, sourceCat],
+  );
+
+  // Everything EXCEPT the segment. The chip counts are computed against this, so
+  // a chip says how many of what you're currently looking at are New/Hot/etc —
+  // and clicking it can never produce a different number than it promised.
+  const baseFiltered = useMemo(() => contacts.filter(c => {
     const matchesSearch = !search ||
       c.contact_number.includes(search) ||
       (c.name && c.name.toLowerCase().includes(search.toLowerCase()));
     const matchesTag = filterTagIds.length === 0 || (c.tags || []).some(t => filterTagIds.includes(t.id));
-    return matchesSearch && matchesTag;
-  });
+    const matchesOwner = !filterOwner
+      || (filterOwner === 'none' ? !c.assigned_user_id : String(c.assigned_user_id) === String(filterOwner));
+    const matchesSource = !filterSource || (c.tags || []).some(t => t.id === filterSource);
+    return matchesSearch && matchesTag && matchesOwner && matchesSource;
+  }), [contacts, search, filterTagIds, filterOwner, filterSource]);
+
+  const segmentCounts = useMemo(() => {
+    const out = {};
+    // Same predicate object the filter below uses — not a re-implementation.
+    for (const s of SEGMENTS) out[s.key] = baseFiltered.filter(s.match).length;
+    return out;
+  }, [baseFiltered]);
+
+  const filtered = useMemo(() => {
+    const seg = SEGMENTS.find(s => s.key === segment) || SEGMENTS[0];
+    const rows = baseFiltered.filter(seg.match);
+
+    const dir = sortDir === 'asc' ? 1 : -1;
+    const byName = (a, b) => String(a.name || '').localeCompare(String(b.name || ''));
+
+    return rows.slice().sort((a, b) => {
+      if (sortBy === 'score') {
+        const sa = leadScore(a);
+        const sb = leadScore(b);
+        // Unscored ALWAYS sinks, in both directions. Treating null as 0 would
+        // rank a never-scored lead above a genuinely bad one, and flipping the
+        // sort would float every unscored lead to the top — the opposite of what
+        // "sort by score" is for.
+        if (sa === null && sb === null) return byName(a, b);
+        if (sa === null) return 1;
+        if (sb === null) return -1;
+        return (sa - sb) * dir || byName(a, b);
+      }
+      if (sortBy === 'owner') {
+        const oa = a.assigned_user_name || '';
+        const ob = b.assigned_user_name || '';
+        // Same reasoning: unassigned is absence, not a name that sorts before 'A'.
+        if (!oa && !ob) return byName(a, b);
+        if (!oa) return 1;
+        if (!ob) return -1;
+        return oa.localeCompare(ob) * dir || byName(a, b);
+      }
+      return byName(a, b) * dir;
+    });
+  }, [baseFiltered, segment, sortBy, sortDir]);
+
+  const toggleSort = (key) => {
+    if (sortBy === key) setSortDir(d => (d === 'asc' ? 'desc' : 'asc'));
+    else { setSortBy(key); setSortDir(key === 'score' ? 'desc' : 'asc'); } // score: best first
+  };
+
+  // KPIs for the current WA account, before the segment narrows it — a headline
+  // that changed every time you clicked a chip would be useless.
+  const kpis = useMemo(() => {
+    const total = contacts.length;
+    const scored = contacts.map(leadScore).filter(s => s !== null);
+    return {
+      total,
+      newThisWeek: contacts.filter(SEGMENTS.find(s => s.key === 'new').match).length,
+      unassigned: contacts.filter(c => !c.assigned_user_id).length,
+      avgScore: scored.length ? Math.round(scored.reduce((a, b) => a + b, 0) / scored.length) : null,
+      hot: contacts.filter(SEGMENTS.find(s => s.key === 'hot').match).length,
+    };
+  }, [contacts]);
 
   const allSelected = filtered.length > 0 && filtered.every(c => selectedContacts.has(c.contact_number));
   const someSelected = filtered.some(c => selectedContacts.has(c.contact_number)) && !allSelected;
@@ -333,6 +536,91 @@ export default function ContactsPage({ user, onNavigate }) {
   };
 
   const clearSelection = () => setSelectedContacts(new Set());
+
+  /* ── Bulk actions ─────────────────────────────────────────────────────────
+     DANGER, and the reason these are hand-written rather than a loop over some
+     generic save: POST /contacts/save does `tags = EXCLUDED.tags` with NO
+     COALESCE, and api.saveContact defaults `tags = []`. So a bulk action that
+     omits tags does not "leave them alone" — it DELETES every tag on the
+     contact, and the backend's tag-diff then fires "Tag Removed" automations for
+     each one. customFields is whole-object replace too (protected only by an
+     `undefined` check), so passing a partial object drops lead_score.
+
+     Every call below therefore passes the row's FULL current tags array, and
+     omits customFields entirely so the server preserves it. */
+
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkError, setBulkError] = useState('');
+  const [manageTagsOpen, setManageTagsOpen] = useState(false);
+  // The category form is state HERE, not inside ManageTagsModal, so it renders
+  // as a sibling — nested, its backdrop click would bubble and close the tag
+  // manager underneath it.
+  const [createCategoryOpen, setCreateCategoryOpen] = useState(false);
+  // When set, the new tag is created in this category and immediately applied to
+  // the current selection ("create & assign" from the bulk dropdown).
+  const [pendingAssignTag, setPendingAssignTag] = useState(null);
+
+  const reloadTagData = useCallback(async () => {
+    const [cats, tgs] = await Promise.all([
+      api.categories.list().catch(() => categories),
+      api.tags.list().catch(() => tags),
+    ]);
+    setCategories(cats);
+    setTags(tgs);
+    return tgs;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const selectedRows = useMemo(
+    () => contacts.filter(c => selectedContacts.has(c.contact_number)),
+    [contacts, selectedContacts],
+  );
+
+  // Apply a per-row patch, preserving everything the save path would otherwise
+  // clobber. `patch(row)` returns { tags?, assignedUserId? }.
+  const bulkApply = async (patch, label) => {
+    setBulkError('');
+    setBulkBusy(true);
+    try {
+      const results = await Promise.allSettled(selectedRows.map(c => {
+        const p = patch(c) || {};
+        return api.saveContact(
+          selectedNumber,
+          c.contact_number,
+          // '' means "don't touch the name" — the server COALESCEs it.
+          '',
+          // Full array, always. This is the line that stops a bulk action from
+          // wiping the contact's tags.
+          p.tags !== undefined ? p.tags : (c.tags || []),
+          // customFields omitted => preserved (lead_score survives).
+          undefined,
+          p.assignedUserId !== undefined ? p.assignedUserId : undefined,
+        );
+      }));
+      const failed = results.filter(r => r.status === 'rejected');
+      if (failed.length) {
+        setBulkError(`${label} failed for ${failed.length} of ${selectedRows.length}: ${failed[0].reason?.message || 'unknown error'}`);
+      }
+      loadContacts(true);
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const bulkAssignOwner = (userId) =>
+    bulkApply(() => ({ assignedUserId: userId === 'none' ? null : parseInt(userId, 10) }), 'Assign owner');
+
+  const bulkAddTag = (tagId) => {
+    const tag = tags.find(t => String(t.id) === String(tagId));
+    if (!tag) return Promise.resolve();
+    const slim = { id: tag.id, name: tag.name, color: tag.color, category_id: tag.category_id };
+    return bulkApply(c => ({
+      // One tag per category is the invariant everywhere else in this page —
+      // adding a tag replaces any existing tag from the SAME category, and
+      // leaves every other category untouched.
+      tags: [...(c.tags || []).filter(t => t.category_id !== tag.category_id), slim],
+    }), 'Add tag');
+  };
 
   const selectedNumberName = numbers.find(n => n.wa_number === selectedNumber)?.display_name || maskPhone(selectedNumber);
 
@@ -448,9 +736,23 @@ export default function ContactsPage({ user, onNavigate }) {
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <Users size={22} color={C.text} />
             <div>
-              <h1 style={{ fontSize: 22, fontWeight: 700, color: C.text, margin: 0, letterSpacing: '-.02em', fontFamily: FONT }}>Contacts</h1>
+              <h1 style={{ fontSize: 22, fontWeight: 700, color: C.text, margin: 0, letterSpacing: '-.02em', fontFamily: FONT }}>Lead Studio</h1>
               <p style={{ fontSize: 12, color: C.textMuted, margin: '4px 0 0', fontFamily: FONT }}>
-                {contacts.length} saved contact{contacts.length !== 1 ? 's' : ''}
+                {contacts.length} lead{contacts.length !== 1 ? 's' : ''} on {selectedNumberName}
+                {onNavigate && (
+                  <>
+                    {' · '}
+                    {/* Deals already have a kanban. Link to it rather than
+                        building a second one that drifts from the first. */}
+                    <button
+                      type="button"
+                      onClick={() => onNavigate('pipelines')}
+                      style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: C.primary, font: 'inherit', fontWeight: 700 }}
+                    >
+                      Open the deal pipeline →
+                    </button>
+                  </>
+                )}
               </p>
             </div>
           </div>
@@ -465,6 +767,49 @@ export default function ContactsPage({ user, onNavigate }) {
             style={{ minWidth: 200 }}
             triggerStyle={{ border: `1px solid ${C.border}` }}
           />
+        </div>
+
+        {/* KPI strip — the current WA account, before the segment narrows it. */}
+        <div style={{ display: 'flex', gap: 10, marginTop: 16, flexWrap: 'wrap' }}>
+          <Kpi label="Total leads" value={kpis.total} />
+          <Kpi label="New this week" value={kpis.newThisWeek} />
+          <Kpi label="Unassigned" value={kpis.unassigned} tone={kpis.unassigned > 0 ? 'warn' : undefined} />
+          <Kpi label="Avg score" value={kpis.avgScore === null ? '—' : kpis.avgScore}
+            hint={kpis.avgScore === null ? 'No leads scored yet' : undefined} />
+          <Kpi label={`Hot (${HOT_SCORE}+)`} value={kpis.hot} tone={kpis.hot > 0 ? 'good' : undefined} />
+        </div>
+
+        {/* Segment chips. Counts come from the SAME predicate the filter uses,
+            so a chip can never promise a number it doesn't then show. */}
+        <div style={{ display: 'flex', gap: 6, marginTop: 14, flexWrap: 'wrap' }}>
+          {SEGMENTS.map(s => {
+            const on = segment === s.key;
+            const n = segmentCounts[s.key] ?? 0;
+            return (
+              <button
+                key={s.key}
+                type="button"
+                aria-pressed={on}
+                onClick={() => setSegment(s.key)}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 6,
+                  padding: '6px 11px', borderRadius: 20, cursor: 'pointer', fontFamily: FONT,
+                  fontSize: 12, fontWeight: on ? 700 : 600,
+                  border: `1px solid ${on ? C.primary : C.border}`,
+                  background: on ? C.primaryLight : 'var(--c-cardBg)',
+                  color: on ? C.primary : C.textSecondary,
+                }}
+              >
+                {s.label}
+                <span style={{
+                  fontSize: 10.5, fontWeight: 800, fontVariantNumeric: 'tabular-nums',
+                  padding: '1px 6px', borderRadius: 20,
+                  background: on ? 'rgba(255,255,255,.5)' : 'var(--c-surfaceAlt)',
+                  color: on ? C.primary : C.textMuted,
+                }}>{n}</span>
+              </button>
+            );
+          })}
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 16, flexWrap: 'wrap' }}>
@@ -492,6 +837,62 @@ export default function ContactsPage({ user, onNavigate }) {
             onChange={setFilterTagIds}
             minWidth={180}
           />
+
+          {/* Tag management lives HERE now, not in Settings — this is the only
+              place anyone applies them. */}
+          <button
+            onClick={() => setManageTagsOpen(true)}
+            title="Create, rename, recolour or remove tags"
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6,
+              padding: '8px 12px', borderRadius: 8,
+              border: `1px solid ${C.border}`, background: 'var(--c-cardBg)',
+              cursor: 'pointer', fontSize: 12, fontWeight: 600,
+              color: C.textSecondary, fontFamily: FONT,
+            }}
+          >
+            <Pencil size={13} /> Manage tags
+          </button>
+
+          {/* Owner. Non-admins never get the users list (the route is adminOnly),
+              so fall back to the names the rows already carry — otherwise this
+              filter would be permanently empty for them. */}
+          <SearchableSelect
+            value={filterOwner}
+            onChange={setFilterOwner}
+            // An explicit "All" is required: a placeholder isn't selectable, so
+            // without it the filter can be set and never undone.
+            options={[
+              { value: '', label: 'All owners' },
+              { value: 'none', label: 'Unassigned' },
+              ...(users.length
+                ? users.filter(u => u.isActive !== false).map(u => ({ value: String(u.id), label: u.displayName || u.username }))
+                : [...new Map(contacts.filter(c => c.assigned_user_id)
+                    .map(c => [String(c.assigned_user_id), c.assigned_user_name || `User ${c.assigned_user_id}`]))]
+                    .map(([value, label]) => ({ value, label }))),
+            ]}
+            placeholder="All owners"
+            searchPlaceholder="Search team…"
+            style={{ minWidth: 150 }}
+            triggerStyle={{ border: `1px solid ${C.border}` }}
+          />
+
+          {/* Source — only when the workspace actually has a Lead Source
+              category. There is no schema-level source; it's this convention. */}
+          {sourceTags.length > 0 && (
+            <SearchableSelect
+              value={filterSource}
+              onChange={setFilterSource}
+              options={[
+                { value: '', label: 'All sources' },
+                ...sourceTags.map(t => ({ value: t.id, label: t.name })),
+              ]}
+              placeholder="All sources"
+              searchPlaceholder="Search sources…"
+              style={{ minWidth: 150 }}
+              triggerStyle={{ border: `1px solid ${C.border}` }}
+            />
+          )}
 
           <button
             onClick={openImport}
@@ -561,9 +962,9 @@ export default function ContactsPage({ user, onNavigate }) {
               </button>
             </>
           )}
-          {(search || filterTagIds.length > 0) && (
+          {(search || filterTagIds.length > 0 || filterOwner || filterSource || segment !== 'all') && (
             <button
-              onClick={() => { setSearch(''); setFilterTagIds([]); }}
+              onClick={() => { setSearch(''); setFilterTagIds([]); setFilterOwner(''); setFilterSource(''); setSegment('all'); }}
               style={{
                 display: 'flex', alignItems: 'center', gap: 4,
                 padding: '8px 12px', borderRadius: 8,
@@ -576,6 +977,57 @@ export default function ContactsPage({ user, onNavigate }) {
             </button>
           )}
         </div>
+
+        {/* Bulk actions. Separate row: they only exist with a selection, and
+            wedging them into the filter row would make it jump. */}
+        {selectedContacts.size > 0 && (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 10, marginTop: 12, flexWrap: 'wrap',
+            padding: '10px 12px', borderRadius: 8,
+            background: C.primaryLight, border: `1px solid ${C.primary}33`,
+          }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: C.primary, fontFamily: FONT }}>
+              {selectedContacts.size} selected
+            </span>
+            {isAdmin && (
+              <SearchableSelect
+                value=""
+                onChange={(v) => { if (v) bulkAssignOwner(v); }}
+                options={[
+                  { value: 'none', label: 'Unassign' },
+                  ...users.filter(u => u.isActive !== false).map(u => ({ value: String(u.id), label: u.displayName || u.username })),
+                ]}
+                placeholder={bulkBusy ? 'Working…' : 'Assign owner…'}
+                searchPlaceholder="Search team…"
+                disabled={bulkBusy}
+                style={{ minWidth: 170 }}
+                triggerStyle={{ border: `1px solid ${C.border}`, background: 'var(--c-cardBg)' }}
+              />
+            )}
+            <SearchableSelect
+              value=""
+              onChange={(v) => { if (v) bulkAddTag(v); }}
+              options={tags.map(t => ({
+                value: String(t.id),
+                label: t.name,
+                sublabel: categories.find(c => c.id === t.category_id)?.name,
+              }))}
+              placeholder={bulkBusy ? 'Working…' : 'Add tag…'}
+              searchPlaceholder="Search tags…"
+              disabled={bulkBusy}
+              // The tag you need often doesn't exist yet — that's the moment you
+              // discover you need it. Sending someone to Settings mid-triage
+              // loses both the selection and the thought.
+              createLabel="Create a new tag…"
+              onCreate={() => { setPendingAssignTag(true); setManageTagsOpen(true); }}
+              style={{ minWidth: 170 }}
+              triggerStyle={{ border: `1px solid ${C.border}`, background: 'var(--c-cardBg)' }}
+            />
+            {bulkError && (
+              <span role="alert" style={{ fontSize: 12, color: '#DC2626', fontWeight: 600, fontFamily: FONT }}>{bulkError}</span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Contact table */}
@@ -590,7 +1042,11 @@ export default function ContactsPage({ user, onNavigate }) {
         {!loading && filtered.length === 0 && (
           <div style={{ textAlign: 'center', color: C.textMuted, fontSize: 13, padding: 60 }}>
             <User size={40} style={{ margin: '0 auto 12px', opacity: 0.4 }} />
-            <div>{(search || filterTagIds.length > 0) ? 'No contacts match your filters' : 'No saved contacts yet'}</div>
+            <div>
+              {(search || filterTagIds.length > 0 || filterOwner || filterSource || segment !== 'all')
+                ? 'No leads match your filters'
+                : 'No saved leads yet'}
+            </div>
             {!search && (
               <div style={{ marginTop: 6, fontSize: 12 }}>
                 Open a chat and click the edit icon next to a contact name to save it here.
@@ -613,8 +1069,10 @@ export default function ContactsPage({ user, onNavigate }) {
                       style={{ cursor: 'pointer', width: 16, height: 16 }}
                     />
                   </th>
-                  <th style={{ padding: '12px 16px', textAlign: 'left', fontWeight: 600, color: C.textSecondary, borderBottom: `1px solid ${C.border}` }}>Name</th>
+                  <SortableTh label="Name" col="name" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
                   <th style={{ padding: '12px 16px', textAlign: 'left', fontWeight: 600, color: C.textSecondary, borderBottom: `1px solid ${C.border}` }}>Phone</th>
+                  <SortableTh label="Score" col="score" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} align="right" />
+                  <SortableTh label="Owner" col="owner" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
                   {categories.map(cat => (
                     <th key={cat.id} style={{ padding: '12px 16px', textAlign: 'left', fontWeight: 600, color: C.textSecondary, borderBottom: `1px solid ${C.border}` }}>{cat.name}</th>
                   ))}
@@ -640,6 +1098,12 @@ export default function ContactsPage({ user, onNavigate }) {
                       </td>
                       <td style={{ padding: '12px 16px', fontWeight: 600, color: C.text }}>{c.name}</td>
                       <td style={{ padding: '12px 16px', color: C.textSecondary }}><MaskedNumber number={c.contact_number} prefix="+" /></td>
+                      <td style={{ padding: '12px 16px', textAlign: 'right' }}><ScoreCell score={leadScore(c)} /></td>
+                      <td style={{ padding: '12px 16px', color: C.textSecondary }}>
+                        {c.assigned_user_name
+                          ? <OwnerChip name={c.assigned_user_name} role={c.assigned_user_role} />
+                          : <span style={{ color: C.textMuted, fontSize: 12 }}>Unassigned</span>}
+                      </td>
                       {categories.map(cat => {
                         const tag = (c.tags || []).find(t => t.category_id === cat.id);
                         const info = tag ? getTagInfo(tag) : null;
@@ -689,6 +1153,44 @@ export default function ContactsPage({ user, onNavigate }) {
         onConfirm={handleBulkDeleteConfirm}
         onCancel={() => setBulkDeleteOpen(false)}
       />
+
+      {/* Manage tags + New category are SIBLINGS, never nested. Rendering the
+          category form inside the tag modal would let its backdrop click bubble
+          up and close the tag modal underneath it. */}
+      {manageTagsOpen && (
+        <ManageTagsModal
+          categories={categories}
+          tags={tags}
+          onClose={() => { setManageTagsOpen(false); setPendingAssignTag(null); }}
+          onChanged={async () => {
+            const fresh = await reloadTagData();
+            // "Create & assign": the tag was created from the bulk dropdown, so
+            // apply it to the selection immediately rather than making them
+            // re-open the dropdown and find it.
+            if (pendingAssignTag && selectedContacts.size > 0) {
+              const newest = fresh
+                .slice()
+                .sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))[0];
+              if (newest) await bulkAddTag(newest.id);
+              setPendingAssignTag(null);
+              setManageTagsOpen(false);
+            }
+          }}
+          onCreateCategory={() => setCreateCategoryOpen(true)}
+        />
+      )}
+      {createCategoryOpen && (
+        <CreateCategoryModal
+          onClose={() => setCreateCategoryOpen(false)}
+          onCreated={async () => {
+            // Refetch categories so the tag form's picker has the new one. The
+            // tag form does NOT reset on this — it keys its reset on the tag
+            // being edited, so a half-typed name survives.
+            await reloadTagData();
+            setCreateCategoryOpen(false);
+          }}
+        />
+      )}
 
       {/* Import Contacts Modal */}
       {importModal && (

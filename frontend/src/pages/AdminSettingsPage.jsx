@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import {
-  Settings, Tag, FolderOpen,
+  Settings, FolderOpen,
   LogOut, Trash2, FormInput, Users as UsersIcon, Shield, Copy,
   ArrowLeft, Plus, X, ChevronLeft, Eye, EyeOff,
   Loader2, MessageSquare, Key, Check, Globe,
@@ -17,7 +17,6 @@ import { useTableSelection, SelectAllCheckbox, RowCheckbox, BulkDeleteButton, ru
 
 const TABS = [
   { key: 'general', label: 'General', icon: Settings },
-  { key: 'tags', label: 'Tags', icon: Tag },
   { key: 'category', label: 'Category', icon: FolderOpen },
   { key: 'fields', label: 'Fields', icon: FormInput },
   { key: 'whatsapp-accounts', label: 'WhatsApp Accounts', icon: MessageSquare },
@@ -156,344 +155,6 @@ function GeneralTab({ onLogout, user }) {
   );
 }
 
-/* ------------------------------------------------------------------ */
-/*  Tags                                                               */
-/* ------------------------------------------------------------------ */
-function TagsTab({ categories, tags, onRefresh }) {
-  const [showAdd, setShowAdd] = useState(false);
-  const [editingTag, setEditingTag] = useState(null);
-  const [name, setName] = useState('');
-  const [color, setColor] = useState('#dc2626');
-  const [categoryId, setCategoryId] = useState('');
-  const [deleteModal, setDeleteModal] = useState({ open: false, id: null });
-  const [filterCategoryId, setFilterCategoryId] = useState('');
-
-  // Category filter — selection/bulk-delete operate on the visible (filtered) set.
-  const filteredTags = filterCategoryId
-    ? tags.filter(t => String(t.category_id) === String(filterCategoryId))
-    : tags;
-
-  const sel = useTableSelection(filteredTags);
-  const handleBulkDelete = async (ids) => {
-    await runBulkDelete(ids, (id) => api.tags.delete(id), {
-      label: 'tag',
-      onSuccess: () => onRefresh(),
-    });
-  };
-
-  const openAdd = () => {
-    setEditingTag(null);
-    setName('');
-    setColor('#dc2626');
-    setCategoryId('');
-    setShowAdd(true);
-  };
-
-  const openEdit = (tag) => {
-    setEditingTag(tag);
-    setName(tag.name);
-    setColor(tag.color);
-    setCategoryId(tag.category_id);
-    setShowAdd(true);
-  };
-
-  const handleSave = async () => {
-    const trimmed = name.trim();
-    if (!trimmed) { alert('Tag name is required'); return; }
-    if (!categoryId) { alert('Please select a category'); return; }
-    try {
-      if (editingTag) {
-        await api.tags.update(editingTag.id, { name: trimmed, color, categoryId });
-      } else {
-        await api.tags.create({ name: trimmed, color, categoryId });
-      }
-      onRefresh();
-      setShowAdd(false);
-      setEditingTag(null);
-      setName('');
-      setColor('#dc2626');
-      setCategoryId('');
-    } catch (err) {
-      alert('Failed to save tag: ' + err.message);
-    }
-  };
-
-  const handleDeleteClick = (id) => {
-    setDeleteModal({ open: true, id });
-  };
-
-  const handleDeleteConfirm = async () => {
-    try {
-      await api.tags.delete(deleteModal.id);
-      onRefresh();
-      setDeleteModal({ open: false, id: null });
-    } catch (err) {
-      alert('Failed to delete tag: ' + err.message);
-    }
-  };
-
-  const getCategoryName = (cid) => categories.find(c => c.id === cid)?.name || '-';
-
-  return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-      <div style={{
-        padding: '20px 32px',
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        borderBottom: `1px solid ${C.border}`,
-      }}>
-        <h1 style={{ fontSize: 22, fontWeight: 700, color: C.text, margin: 0, letterSpacing: '-.02em', fontFamily: FONT }}>Tags</h1>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <SearchableSelect
-            value={filterCategoryId}
-            onChange={(val) => setFilterCategoryId(val)}
-            options={[{ value: '', label: 'All categories' }, ...categories.map(c => ({ value: String(c.id), label: c.name }))]}
-            placeholder="All categories"
-            searchPlaceholder="Search categories…"
-            style={{ maxWidth: 220 }}
-            triggerStyle={{ padding: '8px 32px 8px 12px' }}
-          />
-          <BulkDeleteButton sel={sel} label="tag" onConfirm={handleBulkDelete} />
-          <button onClick={openAdd} style={{
-            display: 'flex', alignItems: 'center', gap: 6,
-            padding: '8px 14px', borderRadius: 8, border: 'none',
-            background: C.primary, color: '#fff', cursor: 'pointer',
-            fontFamily: FONT, fontSize: 13, fontWeight: 600,
-          }}>
-            <Plus size={14} /> Add tag
-          </button>
-        </div>
-      </div>
-
-      <div style={{ flex: 1, overflowY: 'auto', padding: '20px 32px' }}>
-        {tags.length === 0 ? (
-          <div style={{ textAlign: 'center', color: C.textMuted, fontSize: 14, marginTop: 60 }}>
-            No tags yet. Click "Add tag" to create one.
-          </div>
-        ) : filteredTags.length === 0 ? (
-          <div style={{ textAlign: 'center', color: C.textMuted, fontSize: 14, marginTop: 60 }}>
-            No tags in <strong>{getCategoryName(filterCategoryId)}</strong>.
-          </div>
-        ) : (
-          <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: 'hidden' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: FONT, fontSize: 13 }}>
-              <thead>
-                <tr style={{ background: 'var(--c-hover)' }}>
-                  <th style={{ padding: '12px 16px', width: 40, borderBottom: `1px solid ${C.border}` }}><SelectAllCheckbox sel={sel} /></th>
-                  <th style={{ padding: '12px 16px', textAlign: 'left', fontWeight: 600, color: C.textSecondary, borderBottom: `1px solid ${C.border}` }}>Tag</th>
-                  <th style={{ padding: '12px 16px', textAlign: 'left', fontWeight: 600, color: C.textSecondary, borderBottom: `1px solid ${C.border}` }}>Category</th>
-                  <th style={{ padding: '12px 16px', textAlign: 'left', fontWeight: 600, color: C.textSecondary, borderBottom: `1px solid ${C.border}` }}>Created</th>
-                  <th style={{ padding: '12px 16px', textAlign: 'right', fontWeight: 600, color: C.textSecondary, borderBottom: `1px solid ${C.border}` }}>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredTags.map(tag => (
-                  <tr key={tag.id} style={{ background: sel.isSelected(tag.id) ? C.primaryLight : 'var(--c-cardBg)', borderBottom: `1px solid ${C.border}` }}>
-                    <td style={{ padding: '12px 16px', width: 40 }}><RowCheckbox sel={sel} id={tag.id} label={tag.name} /></td>
-                    <td style={{ padding: '12px 16px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <span style={{
-                          width: 14, height: 14, borderRadius: 4,
-                          background: tag.color, display: 'inline-block',
-                          border: '1px solid rgba(0,0,0,0.1)',
-                        }} />
-                        <span style={{ fontWeight: 600, color: C.text }}>{tag.name}</span>
-                      </div>
-                    </td>
-                    <td style={{ padding: '12px 16px', color: C.textSecondary }}>{getCategoryName(tag.category_id)}</td>
-                    <td style={{ padding: '12px 16px', color: C.textSecondary }}>{new Date(tag.created_at).toLocaleDateString()}</td>
-                    <td style={{ padding: '12px 16px', textAlign: 'right' }}>
-                      <button onClick={() => openEdit(tag)} style={{
-                        border: 'none', background: 'transparent', cursor: 'pointer',
-                        color: C.purple, fontSize: 12, fontWeight: 600, marginRight: 12,
-                      }}>Edit</button>
-                      <button onClick={() => handleDeleteClick(tag.id)} style={{
-                        border: 'none', background: 'transparent', cursor: 'pointer',
-                        color: C.primary, fontSize: 12, fontWeight: 600,
-                      }}>Delete</button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      <DeleteConfirmModal
-        open={deleteModal.open}
-        title="Delete Tag"
-        message="Are you sure you want to delete this tag? It will be removed from all contacts."
-        onConfirm={handleDeleteConfirm}
-        onCancel={() => setDeleteModal({ open: false, id: null })}
-      />
-
-      {showAdd && (
-        <div style={{
-          position: 'fixed', inset: 0, background: 'rgba(0,0,0,.35)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          zIndex: 200, fontFamily: FONT,
-        }}>
-          <div style={{
-            background: C.cardBg, borderRadius: 14,
-            padding: '24px 24px 20px', width: 420, boxShadow: C.shadowLg,
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
-              <div style={{ fontSize: 16, fontWeight: 700, color: C.text }}>{editingTag ? 'Edit Tag' : 'Add Tag'}</div>
-              <button onClick={() => { setShowAdd(false); setEditingTag(null); }} style={{
-                border: 'none', background: 'transparent', cursor: 'pointer', color: C.textMuted,
-              }}><X size={18} /></button>
-            </div>
-
-            <div style={{ marginBottom: 16 }}>
-              <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: C.textSecondary, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Tag Name</label>
-              <input autoFocus value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Follow-up"
-                onKeyDown={e => e.key === 'Enter' && handleSave()}
-                style={{
-                  width: '100%', padding: '10px 12px', borderRadius: 8,
-                  border: `1px solid ${C.border}`, fontSize: 14, fontFamily: FONT,
-                  color: C.text, outline: 'none', boxSizing: 'border-box',
-                }} />
-            </div>
-
-            <div style={{ marginBottom: 16 }}>
-              <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: C.textSecondary, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Color</label>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                {COLOR_PRESETS.map(c => (
-                  <button key={c} onClick={() => setColor(c)} style={{
-                    width: 28, height: 28, borderRadius: 6,
-                    background: c,
-                    border: color === c ? `2px solid ${C.text}` : '2px solid transparent',
-                    cursor: 'pointer',
-                    boxShadow: color === c ? '0 0 0 2px rgba(0,0,0,.6) inset' : 'none',
-                  }} />
-                ))}
-                <label style={{
-                  width: 28, height: 28, borderRadius: 6,
-                  border: `2px dashed ${C.border}`,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  cursor: 'pointer', color: C.textMuted,
-                }}>
-                  <Plus size={14} />
-                  <input type="color" value={color} onChange={e => setColor(e.target.value)} style={{ position: 'absolute', opacity: 0, width: 0, height: 0 }} />
-                </label>
-              </div>
-              <div style={{ marginTop: 6, fontSize: 12, color: C.textMuted }}>Selected: {color}</div>
-            </div>
-
-            <div style={{ marginBottom: 20 }}>
-              <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: C.textSecondary, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Category</label>
-              <SearchableSelect
-                value={categoryId}
-                onChange={(val) => setCategoryId(val)}
-                options={categories.map(c => ({ value: String(c.id), label: c.name }))}
-                placeholder="Select category…"
-                searchPlaceholder="Search categories…"
-                style={{ width: '100%' }}
-                triggerStyle={{ fontSize: 14 }}
-              />
-            </div>
-
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <button onClick={() => { setShowAdd(false); setEditingTag(null); }} style={{
-                padding: '8px 16px', borderRadius: 8, border: `1px solid ${C.border}`,
-                background: 'transparent', cursor: 'pointer', fontSize: 13,
-                fontWeight: 600, color: C.textSecondary, fontFamily: FONT,
-              }}>Cancel</button>
-              <button onClick={handleSave} style={{
-                padding: '8px 16px', borderRadius: 8, border: 'none',
-                background: C.primary, color: '#fff', cursor: 'pointer',
-                fontSize: 13, fontWeight: 600, fontFamily: FONT,
-              }}>Save</button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  Category Detail                                                    */
-/* ------------------------------------------------------------------ */
-function CategoryDetail({ category, tags, onBack, onDeleteTag, onRefresh }) {
-  const categoryTags = tags.filter(t => t.category_id === category.id);
-  const [deleteModal, setDeleteModal] = useState({ open: false, id: null });
-
-  const handleDeleteClick = (tid) => {
-    setDeleteModal({ open: true, id: tid });
-  };
-
-  const handleDeleteConfirm = async () => {
-    try {
-      await api.tags.delete(deleteModal.id);
-      onRefresh();
-      setDeleteModal({ open: false, id: null });
-    } catch (err) {
-      alert('Failed to delete tag: ' + err.message);
-    }
-  };
-
-  return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-      <div style={{ padding: '20px 32px', borderBottom: `1px solid ${C.border}` }}>
-        <button onClick={onBack} style={{
-          display: 'flex', alignItems: 'center', gap: 6,
-          border: 'none', background: 'transparent', cursor: 'pointer',
-          color: C.textSecondary, fontFamily: FONT, fontSize: 13,
-          fontWeight: 600, marginBottom: 12,
-        }}>
-          <ChevronLeft size={16} /> Back to categories
-        </button>
-        <h1 style={{ fontSize: 22, fontWeight: 700, color: C.text, margin: 0, letterSpacing: '-.02em', fontFamily: FONT }}>
-          {category.name}
-        </h1>
-        <div style={{ fontSize: 13, color: C.textSecondary, marginTop: 4, fontFamily: FONT }}>
-          {category.description || 'No description'}
-        </div>
-      </div>
-
-      <div style={{ flex: 1, overflowY: 'auto', padding: '20px 32px' }}>
-        <div style={{ fontSize: 14, fontWeight: 600, color: C.textSecondary, marginBottom: 12, fontFamily: FONT }}>
-          Tags under this category ({categoryTags.length})
-        </div>
-        {categoryTags.length === 0 ? (
-          <div style={{ color: C.textMuted, fontSize: 13 }}>No tags assigned to this category yet.</div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {categoryTags.map(tag => (
-              <div key={tag.id} style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                padding: '12px 16px', background: 'var(--c-cardBg)', borderRadius: 8,
-                border: `1px solid ${C.border}`,
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <span style={{
-                    width: 14, height: 14, borderRadius: 4,
-                    background: tag.color, display: 'inline-block',
-                    border: '1px solid rgba(0,0,0,0.1)',
-                  }} />
-                  <span style={{ fontWeight: 600, color: C.text, fontSize: 14 }}>{tag.name}</span>
-                </div>
-                <button onClick={() => handleDeleteClick(tag.id)} style={{
-                  border: 'none', background: 'transparent', cursor: 'pointer',
-                  color: C.primary, fontSize: 12, fontWeight: 600,
-                }}>Delete</button>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      <DeleteConfirmModal
-        open={deleteModal.open}
-        title="Delete Tag"
-        message="Are you sure you want to delete this tag? It will be removed from all contacts."
-        onConfirm={handleDeleteConfirm}
-        onCancel={() => setDeleteModal({ open: false, id: null })}
-      />
-    </div>
-  );
-}
 
 /* ------------------------------------------------------------------ */
 /*  Category Tab                                                       */
@@ -2133,7 +1794,7 @@ function McpToolsTab() {
 export default function AdminSettingsPage({ onLogout, onNavigate, subParts = [], navigate, user }) {
   // 'google-integrations' kept as a back-compat deep link (old bookmarks /
   // any cached OAuth redirects) — it maps onto Integrations → Google below.
-  const VALID_TABS = ['general', 'tags', 'category', 'fields', 'whatsapp-accounts', 'integrations', 'google-integrations', 'mcp', 'users'];
+  const VALID_TABS = ['general', 'category', 'fields', 'whatsapp-accounts', 'integrations', 'google-integrations', 'mcp', 'users'];
   // Admins see every tab; other roles see only tabs granted by their pages
   // (e.g. Sales users get General only).
   const visibleTabs = (user?.role === 'admin' || !Array.isArray(user?.pages))
@@ -2186,13 +1847,6 @@ export default function AdminSettingsPage({ onLogout, onNavigate, subParts = [],
     }
     switch (activeTab) {
       case 'general': return <GeneralTab onLogout={onLogout} user={user} />;
-      case 'tags': return (
-        <TagsTab
-          categories={categories}
-          tags={tags}
-          onRefresh={refresh}
-        />
-      );
       case 'category': return (
         <CategoryTab
           categories={categories}
@@ -2207,10 +1861,10 @@ export default function AdminSettingsPage({ onLogout, onNavigate, subParts = [],
       );
       case 'fields': return <FieldsTab fields={fields} onRefresh={refresh} />;
       case 'whatsapp-accounts': return <WhatsappAccountsTab />;
-      case 'integrations': return <IntegrationsTab subParts={subParts} navigate={navigate} />;
+      case 'integrations': return <IntegrationsTab subParts={subParts} navigate={navigate} user={user} />;
       // Back-compat: old #/admin-settings/google-integrations links land on the
       // Google detail view inside the renamed Integrations tab.
-      case 'google-integrations': return <IntegrationsTab subParts={['integrations', 'google']} navigate={navigate} />;
+      case 'google-integrations': return <IntegrationsTab subParts={['integrations', 'google']} navigate={navigate} user={user} />;
       case 'mcp': return <McpToolsTab />;
       case 'users': return <UsersTab currentUser={user} />;
       default: return <GeneralTab onLogout={onLogout} user={user} />;

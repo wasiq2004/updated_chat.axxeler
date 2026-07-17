@@ -30,7 +30,16 @@ router.get('/categories', async (req, res) => {
 });
 
 // POST /api/categories
-router.post('/categories', requirePermission('admin-settings:category'), async (req, res) => {
+//
+// Gated on 'contacts', not 'admin-settings:category': tags are created in Lead
+// Studio now, and a tag CANNOT exist without a category (tags.category_id is
+// NOT NULL). Without an inline "create category" there, a sales user hits a dead
+// end the first time they need a category that doesn't exist yet.
+//
+// Creating is additive and cheap to undo. UPDATE and DELETE below stay on
+// 'admin-settings:category' — deleting a category CASCADEs every tag inside it,
+// which is a structural change, not lead triage.
+router.post('/categories', requirePermission('contacts'), async (req, res) => {
   try {
     const { name, description } = req.body;
     if (!name || !name.trim()) {
@@ -119,7 +128,16 @@ router.get('/tags', async (req, res) => {
 });
 
 // POST /api/tags
-router.post('/tags', requirePermission('admin-settings:tags'), async (req, res) => {
+//
+// Tag CRUD is gated on 'contacts' — the Lead Studio page where tags are actually
+// applied. It used to require 'admin-settings:tags', a Settings-only permission
+// that 'bda_sales' does not have: the people doing the tagging couldn't create a
+// tag, while an admin who never triages leads could.
+//
+// Applying an EXISTING tag was already open to them (it goes through
+// /contacts/save, which has no permission gate), so this only closes the gap
+// between "can tag a lead" and "can invent the tag they need".
+router.post('/tags', requirePermission('contacts'), async (req, res) => {
   try {
     const { name, color, categoryId } = req.body;
     if (!name || !name.trim()) {
@@ -143,7 +161,7 @@ router.post('/tags', requirePermission('admin-settings:tags'), async (req, res) 
 });
 
 // PUT /api/tags/:id
-router.put('/tags/:id', requirePermission('admin-settings:tags'), async (req, res) => {
+router.put('/tags/:id', requirePermission('contacts'), async (req, res) => {
   try {
     const { id } = req.params;
     const { name, color, categoryId } = req.body;
@@ -168,7 +186,7 @@ router.put('/tags/:id', requirePermission('admin-settings:tags'), async (req, re
 });
 
 // DELETE /api/tags/:id
-router.delete('/tags/:id', requirePermission('admin-settings:tags'), async (req, res) => {
+router.delete('/tags/:id', requirePermission('contacts'), async (req, res) => {
   try {
     const { id } = req.params;
     const params = [id];

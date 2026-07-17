@@ -24,8 +24,12 @@ let worker = null;
 let queueEvents = null;
 
 async function processJob(job) {
-  const { agentId, contactNumber, inboundMessageId, inboundText } = job.data || {};
-  return await runAgent({ agentId, contactNumber, inboundMessageId, inboundText });
+  const { agentId, contactNumber, inboundMessageId, inboundText, explicitlyBound } = job.data || {};
+  // explicitlyBound must survive the queue hop: the worker re-checks is_active,
+  // and an agent a flow bound to this conversation is usually NOT the account's
+  // active one (only one may be). Without carrying the flag, every handoff run
+  // would be rejected by the engine after the router already allowed it.
+  return await runAgent({ agentId, contactNumber, inboundMessageId, inboundText, explicitlyBound });
 }
 
 function startAgentWorker() {
@@ -55,10 +59,10 @@ function startAgentWorker() {
  * messages from the same number doesn't fan out into parallel runs that step
  * over each other.
  */
-async function enqueueAgentRun({ agentId, contactNumber, inboundMessageId, inboundText }) {
+async function enqueueAgentRun({ agentId, contactNumber, inboundMessageId, inboundText, explicitlyBound = false }) {
   await agentQueue.add(
     'run',
-    { agentId, contactNumber, inboundMessageId, inboundText },
+    { agentId, contactNumber, inboundMessageId, inboundText, explicitlyBound },
     {
       jobId: `agent-${agentId}-${contactNumber}-${inboundMessageId || Date.now()}`,
       attempts: ATTEMPTS,
