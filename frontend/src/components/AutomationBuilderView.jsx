@@ -436,7 +436,7 @@ const Alert = ({ kind, children, style }) => {
    Node types, sample flow, canvas, blocks, settings, preview, toolbar
    ══════════════════════════════════════════════════════════════════════ */
 
-const NT = {
+export const NT = {
   trigger: { bg:"rgba(226,38,53,.16)", border:"rgba(226,38,53,.34)", color:"#E22635", accent:"#E22635", label:"TRIGGER",       icon:IC.zap },
   message: { bg:"rgba(96,165,250,.16)", border:"rgba(96,165,250,.34)", color:"#2563EB", accent:"#2563EB", label:"MESSAGE",       icon:IC.msg },
   condition:{ bg:"rgba(245,158,11,.16)", border:"rgba(245,158,11,.34)", color:"#D97706", accent:"#D97706", label:"CONDITION",     icon:IC.branch },
@@ -446,7 +446,22 @@ const NT = {
   handoff: { bg:"rgba(244,114,182,.16)", border:"rgba(244,114,182,.34)", color:"#F472B6", accent:"#F472B6", label:"HUMAN HANDOFF", icon:IC.agent },
   ai:      { bg:"rgba(157,124,255,.16)", border:"rgba(157,124,255,.34)", color:"#7C3AED", accent:"#7C3AED", label:"AI",            icon:IC.ai },
   subflow: { bg:"rgba(34,197,94,.16)", border:"rgba(34,197,94,.34)", color:"#16A34A", accent:"#16A34A", label:"SUB-FLOW",      icon:IC.flow },
+  // Deliberately in the handoff family (see `handoff` above) — these are the two
+  // ways a flow hands the conversation away; the label and icon carry the
+  // human/AI distinction, so the shared hue reads as "same kind of thing".
+  agentHandoff:{ bg:"rgba(219,39,119,.16)", border:"rgba(219,39,119,.34)", color:"#DB2777", accent:"#DB2777", label:"AI HANDOFF", icon:IC.ai },
+  sheets:  { bg:"rgba(8,145,178,.16)", border:"rgba(8,145,178,.34)", color:"#0891B2", accent:"#0891B2", label:"SHEETS",        icon:IC.doc },
 };
+
+// NEVER index NT directly in a render path. A node type with no NT entry yields
+// undefined, and the very next `.bg` throws — which white-screens the WHOLE
+// builder, not just that one block. That is exactly what shipping the `sheets`
+// and `agentHandoff` blocks without NT entries did: the block library maps over
+// every palette item on open, so the builder died before it drew anything.
+// An unknown type (an imported flow, a future block, a typo) must degrade to a
+// neutral chip instead.
+const NT_FALLBACK = { bg:"rgba(100,116,139,.16)", border:"rgba(100,116,139,.34)", color:"#64748B", accent:"#64748B", label:"BLOCK", icon:IC.flow };
+export const ntOf = (type) => NT[type] || NT_FALLBACK;
 
 const NODE_W = 240;
 export const nodeH = (n) => {
@@ -720,7 +735,7 @@ const evalConditionRule = (r, contact, messageBody = "") => {
 
 /* ── Interactive FlowNode with input/output handles ── */
 const FlowNode = ({ n, selected, onSelect, onOpenDetail, onStartDrag, onStartConnect, whatsappAccounts=[] }) => {
-  const t = NT[n.type];
+  const t = ntOf(n.type);
   const h = nodeH(n);
   const isCondition = n.type === "condition";
   const isAction = n.type === "action";
@@ -1014,7 +1029,7 @@ const NodePicker = ({ x, y, onPick, onClose, mode, groups = [] }) => {
               <span style={{ color:C.ghost, transform:isOpen?"rotate(180deg)":"rotate(0)", transition:"transform .15s" }}>{IC.cD(10)}</span>
             </div>
             {isOpen && items.map(it => {
-              const t = NT[it.type];
+              const t = ntOf(it.type);
               return (
                 <button data-testid="node-picker-item" key={it.name} onClick={()=>onPick(it)} style={{
                   width:"100%", padding:"7px 9px", background:"transparent", border:"1px solid transparent", borderRadius:7, cursor:"pointer", textAlign:"left",
@@ -1042,7 +1057,7 @@ const NodePicker = ({ x, y, onPick, onClose, mode, groups = [] }) => {
 // before the next step; the tag actions mutate the contact's tags JSONB.
 // Operator/source/action-kind strings below match the backend
 // automationEngine.js evaluateRule()/executeActionNode() handlers exactly.
-const BLOCK_GROUPS = [
+export const BLOCK_GROUPS = [
   { title:"Triggers", color:C.brand, items:[
     { name:"Keyword Trigger",  type:"trigger", icon:IC.zap,   desc:"User sends a keyword",
       defaults:{ triggerKind:"keyword", keyword:"PRICE", matchType:"exact", caseSensitive:false, summary:"Trigger when contact sends a specific keyword" } },
@@ -1151,7 +1166,7 @@ const BlockLibrary = ({ onAddBlock }) => {
                 <span style={{ color:C.ghost, transform:isOpen?"rotate(180deg)":"rotate(0)", transition:"transform .15s" }}>{IC.cD(10)}</span>
               </div>
               {isOpen && items.map(it => {
-                const t = NT[it.type];
+                const t = ntOf(it.type);
                 return (
                   <button data-testid="block-library-item" key={it.name} title={`Click to add "${it.name}" to the canvas · ${it.desc}`}
                     draggable
@@ -1886,7 +1901,7 @@ const SettingsPanel = ({ node, nodes=[], edges=[], onUpdateNode=()=>{}, onDelete
       <div style={{ fontSize:12, color:C.text5, lineHeight:1.5 }}>Click any node on the canvas to configure its message body, buttons, conditions, or API behavior.</div>
     </aside>
   );
-  const t = NT[node.type];
+  const t = ntOf(node.type);
 
   let content = null;
 
@@ -4419,7 +4434,7 @@ const NDVColumn = ({ title, accent, children }) => (
 );
 
 const NodeDetailView = ({ node, nodes, edges, contactFields=[], templates=[], onClose, children }) => {
-  const t = NT[node.type] || NT.trigger;
+  const t = ntOf(node.type);
   const byId = Object.fromEntries(nodes.map(n=>[n.id,n]));
   const nodeName = (n) => !n ? "—" : (n.type==='trigger' ? getTriggerDisplay(n).title : ((n.title && n.title.trim()) ? n.title : `${n.type} node`));
   const upstream = edges.filter(e=>e.to===node.id).map(e=>byId[e.from]).filter(Boolean);
@@ -4623,7 +4638,7 @@ const MiniMap = ({ nodes, transform }) => {
       <div style={{ fontSize:8, fontWeight:700, color:C.muted, letterSpacing:".1em", textTransform:"uppercase", marginBottom:5 }}>Mini-map</div>
       <div style={{ position:"relative", width:mw, height:mh, background:C.sectionBg, borderRadius:6, overflow:"hidden" }}>
         {nodes.map(n=>{
-          const t = NT[n.type];
+          const t = ntOf(n.type);
           return <div key={n.id} style={{
             position:"absolute",
             left: offX + (n.x - minX) * s,
