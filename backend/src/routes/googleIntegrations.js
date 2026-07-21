@@ -40,11 +40,19 @@ const publicRouter = Router();
 const router = Router();
 
 /**
- * Where to send the user's browser after the OAuth dance finishes. Falls back
- * to "/" if CORS_ORIGIN isn't set (dev). Trailing-slash safe.
+ * Where to send the user's browser after the OAuth dance finishes.
+ *
+ * The public origin is: explicit APP_URL, else the FIRST CORS origin. CORS_ORIGIN
+ * is a comma-separated LIST (e.g. "https://app.example,http://app.example"), so
+ * using it raw as a base produced a malformed redirect like
+ * "https://a,http://a/#/..." that the browser can't resolve — the Google connect
+ * then fails right after consent. This mirrors emailVerification.appUrl(), which
+ * already resolves the canonical origin the same way. Trailing-slash safe.
  */
 function frontendSettingsUrl({ status, error, label }) {
-  const base = (process.env.CORS_ORIGIN || '/').replace(/\/+$/, '');
+  const explicit = process.env.APP_URL;
+  const corsFirst = (process.env.CORS_ORIGIN || '').split(',')[0].trim();
+  const base = (explicit || corsFirst || '/').replace(/\/+$/, '');
   const params = new URLSearchParams();
   if (status) params.set('google', status);
   if (error) params.set('error', error.slice(0, 200));
