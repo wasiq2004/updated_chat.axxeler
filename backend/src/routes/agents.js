@@ -64,6 +64,7 @@ function agentShape(row) {
     triggerMatchType: row.trigger_match_type || 'contains',
     triggerCaseSensitive: !!row.trigger_case_sensitive,
     triggerSessionMinutes: row.trigger_session_minutes != null ? row.trigger_session_minutes : 30,
+    triggerTags: Array.isArray(row.trigger_tags) ? row.trigger_tags : [],
     mediaGroups: Array.isArray(row.media_groups) ? row.media_groups : [],
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -73,6 +74,42 @@ function agentShape(row) {
 // Coerce a raw match type to one of the supported values.
 function cleanMatchType(v) {
   return ['exact', 'contains', 'starts'].includes(v) ? v : 'contains';
+}
+
+// Coerce a raw trigger mode. THE OLD VERSION of this check was an inline
+// keyword-or-else-any ternary, which silently rewrote 'new' to 'any' — so
+// "New conversations only" agents were stored as always-on and replied to
+// everybody. The editor and the router both supported 'new' the whole time.
+// (agentRouterSelection.test.js greps this file for the old pattern, so do
+// not write it out literally, even in a comment.)
+function cleanTriggerMode(v) {
+  return ['any', 'new', 'keyword'].includes(v) ? v : 'any';
+}
+
+// Tag scope → unique positive ints (max 20). Empty = no restriction.
+function sanitizeTriggerTags(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const v of raw) {
+    const n = parseInt(v, 10);
+    if (Number.isInteger(n) && n > 0 && !out.includes(n)) out.push(n);
+    if (out.length >= 20) break;
+  }
+  return out;
+}
+
+// Per-kind activation conflict → a message that names the actual rule.
+// Falls back to the old blanket wording when the DB still has the pre-082
+// one-active-per-account index.
+function activationConflictMessage(err) {
+  const c = String(err.constraint || err.detail || '');
+  if (c.includes('one_active_any')) {
+    return 'An "Any message" agent is already live on this WhatsApp account. Only one always-on agent can be live — disable it first, or use a Keyword trigger (unlimited).';
+  }
+  if (c.includes('one_active_new')) {
+    return 'A "New conversations" agent is already live on this WhatsApp account. Only one can be live — disable it first.';
+  }
+  return 'Another agent is already active on this WhatsApp account. Disable it first.';
 }
 
 // Handoff user ids → unique positive ints (max 50).
@@ -318,7 +355,7 @@ router.post('/agents', adminOnly, async (req, res) => {
     const isActive = status === 'active' ? !!b.isActive : false;
 
     // Trigger config.
-    const triggerMode = b.triggerMode === 'keyword' ? 'keyword' : 'any';
+    const triggerMode = cleanTriggerMode(b.triggerMode);
     const triggerKeyword = typeof b.triggerKeyword === 'string' ? b.triggerKeyword.trim().slice(0, 200) : '';
     if (status === 'active' && triggerMode === 'keyword' && !triggerKeyword) {
       return res.status(400).json({ error: 'A keyword-triggered agent needs a keyword.' });
@@ -331,12 +368,12 @@ router.post('/agents', adminOnly, async (req, res) => {
           status, wa_account_id, is_active,
           context_window_messages, max_tool_iterations,
           trigger_mode, trigger_keyword, trigger_match_type,
-          trigger_case_sensitive, trigger_session_minutes, media_groups,
+          trigger_case_sensitive, trigger_session_minutes, trigger_tags, media_groups,
           transcribe_audio, accept_images, crm_tools_enabled,
           handoff_enabled, handoff_user_ids, handoff_keywords,
           close_summary_enabled, close_idle_minutes,
           tenant_id, organization_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
        RETURNING id`,
       [
         b.name.trim(), b.description?.trim() || null,
@@ -347,6 +384,7 @@ router.post('/agents', adminOnly, async (req, res) => {
         triggerMode, triggerKeyword || null, cleanMatchType(b.triggerMatchType),
         !!b.triggerCaseSensitive,
         Math.max(1, Math.min(1440, parseInt(b.triggerSessionMinutes || 30, 10))),
+        JSON.stringify(sanitizeTriggerTags(b.triggerTags)),
         JSON.stringify(mediaGroups),
         !!b.transcribeAudio,
         !!b.acceptImages,
@@ -362,7 +400,7 @@ router.post('/agents', adminOnly, async (req, res) => {
     res.status(201).json(await fetchAgent(rows[0].id));
   } catch (err) {
     if (err.code === '23505') {
-      return res.status(409).json({ error: 'Another agent is already active on this WhatsApp account. Disable it first.' });
+      return res.status(409).json({ error: activationConflictMessage(err) });
     }
     console.error('[agents] create error:', err.message);
     res.status(500).json({ error: 'Failed to create agent' });
@@ -401,7 +439,7 @@ router.put('/agents/:id', adminOnly, async (req, res) => {
     }
 
     // A keyword-triggered agent that's going live needs a keyword.
-    const effTrigMode = b.triggerMode !== undefined ? (b.triggerMode === 'keyword' ? 'keyword' : 'any') : (cur.trigger_mode || 'any');
+    const effTrigMode = b.triggerMode !== undefined ? cleanTriggerMode(b.triggerMode) : (cur.trigger_mode || 'any');
     const effTrigKeyword = b.triggerKeyword !== undefined ? String(b.triggerKeyword || '').trim() : (cur.trigger_keyword || '');
     if ((effStatus === 'active' || effIsActive) && effTrigMode === 'keyword' && !effTrigKeyword) {
       return res.status(400).json({ error: 'A keyword-triggered agent needs a keyword.' });
@@ -438,6 +476,7 @@ router.put('/agents/:id', adminOnly, async (req, res) => {
     if (b.triggerSessionMinutes !== undefined) {
       push('trigger_session_minutes', Math.max(1, Math.min(1440, parseInt(b.triggerSessionMinutes, 10) || 30)));
     }
+    if (b.triggerTags !== undefined) push('trigger_tags', JSON.stringify(sanitizeTriggerTags(b.triggerTags)));
     if (b.mediaGroups !== undefined) push('media_groups', JSON.stringify(normalizeMediaGroups(b.mediaGroups)));
     if (b.handoffEnabled !== undefined) push('handoff_enabled', !!b.handoffEnabled);
     if (b.handoffUserIds !== undefined) push('handoff_user_ids', JSON.stringify(sanitizeHandoffUserIds(b.handoffUserIds)));
@@ -455,7 +494,7 @@ router.put('/agents/:id', adminOnly, async (req, res) => {
     res.json(await fetchAgent(rows[0].id));
   } catch (err) {
     if (err.code === '23505') {
-      return res.status(409).json({ error: 'Another agent is already active on this WhatsApp account. Disable it first.' });
+      return res.status(409).json({ error: activationConflictMessage(err) });
     }
     console.error('[agents] update error:', err.message);
     res.status(500).json({ error: 'Failed to update agent' });
@@ -593,7 +632,7 @@ router.post('/agents/import', adminOnly, async (req, res) => {
         waAccountId,
         Math.max(1, Math.min(100, parseInt(a.contextWindowMessages || 20, 10))),
         Math.max(1, Math.min(20, parseInt(a.maxToolIterations || 6, 10))),
-        (a.triggerMode === 'keyword' ? 'keyword' : 'any'),
+        cleanTriggerMode(a.triggerMode),
         (typeof a.triggerKeyword === 'string' ? a.triggerKeyword.trim().slice(0, 200) : null) || null,
         cleanMatchType(a.triggerMatchType),
         !!a.triggerCaseSensitive,

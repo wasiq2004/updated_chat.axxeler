@@ -30,6 +30,7 @@ const BLANK = {
   closeSummaryEnabled: false,
   closeIdleMinutes: 30,
   triggerMode: 'any',
+  triggerTags: [],
   triggerKeyword: '',
   triggerMatchType: 'contains',
   triggerCaseSensitive: false,
@@ -85,6 +86,7 @@ export default function AgentEditor({ agentId, waAccounts, user, navigate, onDon
           closeSummaryEnabled: !!a.closeSummaryEnabled,
           closeIdleMinutes: a.closeIdleMinutes || 30,
           triggerMode: a.triggerMode || 'any',
+          triggerTags: Array.isArray(a.triggerTags) ? a.triggerTags : [],
           triggerKeyword: a.triggerKeyword || '',
           triggerMatchType: a.triggerMatchType || 'contains',
           triggerCaseSensitive: !!a.triggerCaseSensitive,
@@ -168,6 +170,7 @@ export default function AgentEditor({ agentId, waAccounts, user, navigate, onDon
       closeSummaryEnabled: form.closeSummaryEnabled,
       closeIdleMinutes: form.closeIdleMinutes,
       triggerMode: form.triggerMode,
+      triggerTags: form.triggerTags,
       triggerKeyword: form.triggerKeyword,
       triggerMatchType: form.triggerMatchType,
       triggerCaseSensitive: form.triggerCaseSensitive,
@@ -757,16 +760,37 @@ function Field({ label, info, children }) {
 
 /* ---------- Trigger config ---------- */
 
-// Mode toggle (Any message / Keyword) + keyword settings. Styled to the agent
-// builder (pills + fields), not the automation flow-canvas node.
+// Mode toggle (Any message / New conversations / Keyword) + keyword settings
+// + tag scope. Styled to the agent builder (pills + fields), not the automation
+// flow-canvas node.
+//
+// Activation rules (enforced by the DB since migration 082, per WhatsApp
+// number): ONE live "Any message" agent, ONE live "New conversations" agent,
+// and UNLIMITED live Keyword agents. The copy below says so where the choice
+// is made, so the 409 on going live is never a surprise.
 function TriggerConfig({ form, setForm }) {
   const set = (patch) => setForm(f => ({ ...f, ...patch }));
   const mode = form.triggerMode || 'any';
   const isKeyword = mode === 'keyword';
+
+  // Tag scope picker data. Fetched here, not threaded from the page — the
+  // editor is opened from more than one place.
+  const [allTags, setAllTags] = useState(null); // null = loading, [] = none exist
+  useEffect(() => {
+    let alive = true;
+    api.tags.list().then(t => { if (alive) setAllTags(Array.isArray(t) ? t : []); })
+      .catch(() => { if (alive) setAllTags([]); });
+    return () => { alive = false; };
+  }, []);
+  const scoped = Array.isArray(form.triggerTags) ? form.triggerTags : [];
+  const toggleTag = (id) => set({
+    triggerTags: scoped.includes(id) ? scoped.filter(x => x !== id) : [...scoped, id],
+  });
+
   return (
     <div>
       <FieldRow>
-        <Field label="When does it run?" info="Any message: replies to every inbound on its number. New conversations only: engages a contact ONLY on their first-ever message (a new lead), then keeps replying to that conversation — it never joins conversations that already existed. Keyword: engages only when a message matches a keyword, then keeps replying for the session.">
+        <Field label="When does it run?" info="Any message: replies to every inbound on its number — one can be live per number. New conversations only: engages a contact ONLY on their first-ever message (a new lead) — one can be live per number, and it wins over keyword agents for that first message. Keyword: engages when a message matches its keyword — as many as you like can be live at once.">
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <Pill active={mode === 'any'} onClick={() => set({ triggerMode: 'any' })}>Any message</Pill>
             <Pill active={mode === 'new'} onClick={() => set({ triggerMode: 'new' })}>New conversations only</Pill>
@@ -774,6 +798,14 @@ function TriggerConfig({ form, setForm }) {
           </div>
         </Field>
       </FieldRow>
+
+      {mode === 'any' && (
+        <div style={{ fontSize: 11, color: C.textMuted, marginTop: -4, marginBottom: 8, lineHeight: 1.5 }}>
+          Only one “Any message” agent can be live per WhatsApp number. While a “New conversations”
+          agent is also live, that agent takes first-time contacts and this one handles everyone else;
+          with no “New conversations” agent live, this one answers first-timers too.
+        </div>
+      )}
 
       {mode === 'new' && (
         <>
@@ -832,6 +864,45 @@ function TriggerConfig({ form, setForm }) {
           </FieldRow>
         </>
       )}
+
+      {/* Tag scope — on every trigger kind. Empty = everyone. */}
+      <FieldRow>
+        <Field label="Only speak to contacts with these tags (optional)"
+          info="Leave empty and the agent talks to anyone its trigger matches. Pick tags and it ONLY engages contacts carrying at least one of them — everyone else is left alone. Removing the tag from a contact stops the agent on their next message.">
+          {allTags === null ? (
+            <div style={{ fontSize: 12, color: C.textMuted }}>Loading tags…</div>
+          ) : allTags.length === 0 ? (
+            <div style={{ fontSize: 12, color: C.textMuted }}>No tags exist yet — create some under Contacts.</div>
+          ) : (
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {allTags.map(t => {
+                const on = scoped.includes(t.id);
+                return (
+                  <button key={t.id} type="button" onClick={() => toggleTag(t.id)} aria-pressed={on}
+                    style={{
+                      padding: '6px 12px', borderRadius: 999, cursor: 'pointer',
+                      border: `1.5px solid ${on ? C.primary : C.border}`,
+                      background: on ? 'rgba(15,168,224,.14)' : C.cardBg,
+                      color: on ? C.primary : C.text,
+                      fontSize: 12, fontFamily: FONT, fontWeight: on ? 700 : 500,
+                    }}>
+                    {t.name}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {mode === 'new' && scoped.length > 0 && (
+            // Say the awkward truth where the choice is made: a true first-time
+            // contact has no contact row and no tags, so a tag-scoped 'new'
+            // agent will almost never engage anyone.
+            <div style={{ fontSize: 11, color: '#D97706', marginTop: 6, lineHeight: 1.5, fontWeight: 600 }}>
+              Heads up: a first-time contact usually has no tags yet, so tag-scoping a
+              “New conversations” agent means it will rarely engage anyone. Consider clearing this.
+            </div>
+          )}
+        </Field>
+      </FieldRow>
     </div>
   );
 }

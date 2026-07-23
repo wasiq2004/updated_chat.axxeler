@@ -9,16 +9,34 @@ const { performHandoff, resumeAgent } = require('../services/agentHandoff');
 
 const router = Router();
 
-// Find the active agent (if any) bound to the WhatsApp number of a contact.
-async function activeAgentForWaNumber(waNumber) {
+// Find the agent this conversation would actually talk to. Since migration 082
+// several agents can be live on one number (1 'any' + 1 'new' + N keyword), so
+// "the" agent is resolved in the same spirit as the router:
+//   1. the conversation's explicit binding (contacts.agent_id),
+//   2. else the live agent that most recently ran for THIS contact,
+//   3. else the always-on 'any' agent, then 'new', then the first keyword one —
+//      a deterministic pick for the header label, not a routing decision.
+async function activeAgentForConversation(waNumber, contactNumber) {
   const { rows } = await pool.query(
     `SELECT a.id, a.name
        FROM coexistence.agents a
        JOIN coexistence.whatsapp_accounts w ON w.id = a.wa_account_id
-      WHERE a.is_active = TRUE
-        AND regexp_replace(w.display_phone_number, '\\D', '', 'g') = regexp_replace($1, '\\D', '', 'g')
+       LEFT JOIN coexistence.contacts c
+         ON c.wa_number = regexp_replace($1, '\\D', '', 'g') AND c.contact_number = $2
+       LEFT JOIN LATERAL (
+         SELECT MAX(r.started_at) AS last_run
+           FROM coexistence.agent_runs r
+          WHERE r.agent_id = a.id AND r.contact_number = $2
+       ) runs ON TRUE
+      WHERE regexp_replace(w.display_phone_number, '\\D', '', 'g') = regexp_replace($1, '\\D', '', 'g')
+        AND (a.is_active = TRUE OR a.id = c.agent_id)
+        AND a.status <> 'draft'
+      ORDER BY (a.id = c.agent_id) DESC NULLS LAST,
+               runs.last_run DESC NULLS LAST,
+               CASE a.trigger_mode WHEN 'any' THEN 0 WHEN 'new' THEN 1 ELSE 2 END,
+               a.id
       LIMIT 1`,
-    [waNumber || ''],
+    [waNumber || '', contactNumber || ''],
   );
   return rows[0] || null;
 }
@@ -31,7 +49,7 @@ router.get('/agent-conversation', async (req, res) => {
   if (!waNumber || !contactNumber) return res.status(400).json({ error: 'waNumber and contactNumber are required' });
   if (!(await assertContactAccess(req, res, waNumber, contactNumber))) return;
   try {
-    const agent = await activeAgentForWaNumber(waNumber);
+    const agent = await activeAgentForConversation(waNumber, contactNumber);
     const { rows } = await pool.query(
       `SELECT agent_paused, agent_paused_by, agent_paused_reason, agent_paused_at
          FROM coexistence.contacts WHERE wa_number = $1 AND contact_number = $2`,
@@ -59,7 +77,7 @@ router.post('/agent-conversation/pause', async (req, res) => {
   if (!waNumber || !contactNumber) return res.status(400).json({ error: 'waNumber and contactNumber are required' });
   if (!(await assertContactAccess(req, res, waNumber, contactNumber))) return;
   try {
-    const agent = await activeAgentForWaNumber(waNumber);
+    const agent = await activeAgentForConversation(waNumber, contactNumber);
     if (!agent) return res.status(400).json({ error: 'No active AI agent on this number.' });
     const who = req.user?.displayName || req.user?.username || `user ${req.user?.id}`;
     const r = await performHandoff({
